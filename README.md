@@ -162,6 +162,30 @@ top
 
 This service will later be deployed in Kubernetes to generate test scenarios for the AIOps platform.
 
+## 📦 Containerization
+
+The stress test application is packaged as a Docker container for portability and deployment in Kubernetes.
+
+### Build Image
+
+```bash
+docker build -t bacdocker/aiops-stress-app:v1 ./app
+```
+
+### Run Container
+
+```bash
+docker run -p 5001:5001 bacdocker/aiops-stress-app:v1
+```
+
+### Push to Docker Hub
+
+```bash
+docker push bacdocker/aiops-stress-app:v1
+```
+
+The container image will be used later when deploying the application to Kubernetes.
+
 ## ⚙️ Environment Setup
 
 ### Prerequisites
