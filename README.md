@@ -648,7 +648,7 @@ The Kubernetes cluster is now equipped with a complete monitoring stack capable 
 
 This monitoring foundation enables the next stage of the platform where alerts and automated responses can be configured based on detected anomalies.
 
-## 🚨 Alerting System Setup and Verification (Day 6)
+## 🚨 Alerting System Setup and Verification
 
 ### Objective
 
