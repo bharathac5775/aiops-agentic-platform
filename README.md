@@ -648,6 +648,169 @@ The Kubernetes cluster is now equipped with a complete monitoring stack capable 
 
 This monitoring foundation enables the next stage of the platform where alerts and automated responses can be configured based on detected anomalies.
 
+## 🚨 Alerting System Setup and Verification (Day 6)
+
+### Objective
+
+Implemented Kubernetes alerting using Prometheus alert rules and Alertmanager to detect abnormal pod CPU usage.
+The target condition is pod CPU usage above 80%, validating end-to-end anomaly detection.
+
+### Alerting Flow
+
+```text
+Application Pod
+↓
+Prometheus collects metrics
+↓
+Prometheus evaluates alert rules
+↓
+Alertmanager receives alerts
+↓
+Alert is visible in Alertmanager UI
+```
+
+### Custom Alert Rule
+
+Alert rule file:
+
+`k8s/alerts/cpu-alert.yaml`
+
+Key rule behavior:
+
+- Alert name: `HighPodCPUUsage`
+- Expression monitors pod CPU rate in `default` namespace
+- Threshold: `> 0.8` (80% CPU)
+- Duration: `for: 10s`
+- Severity: `warning`
+
+Example expression:
+
+```promql
+sum by (pod) (rate(container_cpu_usage_seconds_total{namespace="default"}[2m])) > 0.8
+```
+
+### Deploy and Verify Rule
+
+Apply rule:
+
+```bash
+kubectl apply -f k8s/alerts/cpu-alert.yaml
+```
+
+Verify rule object:
+
+```bash
+kubectl get prometheusrules -n monitoring
+```
+
+Expected to include:
+
+```text
+aiops-alert-rules
+```
+
+### Prometheus Verification
+
+Port-forward Prometheus:
+
+```bash
+kubectl port-forward svc/monitoring-kube-prometheus-prometheus 9090 -n monitoring
+```
+
+UI:
+
+```text
+http://localhost:9090
+```
+
+Check rule in:
+
+```text
+Status → Rule Health
+```
+
+### Trigger and Validate Alert
+
+Generate CPU stress:
+
+```bash
+curl http://<service-ip>/cpu-stress
+```
+
+Validate resource usage:
+
+```bash
+kubectl top pods
+kubectl top nodes
+```
+
+When CPU remains above threshold, alert status becomes:
+
+```text
+FIRING
+```
+
+Alert details:
+
+- Alert: `HighPodCPUUsage`
+- Pod: `stress-app`
+- Severity: `warning`
+- Typical observed value: `~1.0 CPU`
+
+### Alertmanager Verification
+
+Port-forward Alertmanager:
+
+```bash
+kubectl port-forward svc/monitoring-kube-prometheus-alertmanager 9093 -n monitoring
+```
+
+UI:
+
+```text
+http://localhost:9093
+```
+
+Active alert contains:
+
+```text
+summary: High CPU usage detected
+description: Pod CPU usage above 80%
+status: FIRING
+```
+
+### Result
+
+Validated end-to-end alerting pipeline:
+
+- Prometheus metrics collection
+- Alert rule evaluation
+- Alert firing
+- Alertmanager reception
+- Alert visibility in UI
+
+This confirms the platform can automatically detect infrastructure anomalies.
+
+### Next Phase
+
+Integrate Alertmanager webhook with the AI Engine for autonomous response:
+
+```text
+Prometheus
+↓
+Alertmanager
+↓
+Webhook
+↓
+AI Engine (FastAPI)
+↓
+LangGraph workflow
+↓
+Root cause analysis
+↓
+Automated remediation
+```
+
 ## 🧠 AI Engine Concept
 
 The AI engine performs automated incident analysis and remediation.
