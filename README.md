@@ -464,6 +464,190 @@ Verify cluster:
 kubectl get nodes
 ```
 
+## 📈 Kubernetes Monitoring Setup with Prometheus and Grafana
+
+### Objective
+
+Set up a monitoring stack in Kubernetes to collect and visualize metrics from cluster workloads.
+This setup enables observing resource usage such as CPU and memory from running pods and prepares the platform for alerting and AIOps analysis.
+
+### Monitoring Stack Architecture
+
+The monitoring stack consists of:
+
+- **Prometheus** - collects and stores metrics from Kubernetes
+- **Grafana** - visualizes metrics through dashboards
+- **Node Exporter** - collects node-level metrics
+- **kube-state-metrics** - exposes Kubernetes object metrics
+- **Metrics Server** - provides resource metrics for pods and nodes
+
+```text
+Kubernetes Cluster
+     │
+     ▼
+Prometheus (Metrics Collection)
+     │
+     ▼
+Grafana (Visualization)
+     │
+     ▼
+Dashboards showing CPU, memory, pod status
+```
+
+### Installing Prometheus Stack
+
+The monitoring stack is installed using **Helm**, the standard package manager for Kubernetes.
+
+#### Add Helm Repository
+
+```bash
+helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+helm repo update
+```
+
+#### Install kube-prometheus-stack
+
+```bash
+helm install monitoring prometheus-community/kube-prometheus-stack \
+  --namespace monitoring \
+  --create-namespace
+```
+
+This installs:
+
+- Prometheus
+- Grafana
+- Alertmanager
+- Node Exporter
+- kube-state-metrics
+
+### Verifying Installation
+
+Check the deployed resources.
+
+#### Verify Pods
+
+```bash
+kubectl get pods -n monitoring
+```
+
+Example output:
+
+```text
+monitoring-grafana
+monitoring-kube-prometheus-operator
+monitoring-kube-state-metrics
+monitoring-prometheus-node-exporter
+```
+
+#### Verify Services
+
+```bash
+kubectl get svc -n monitoring
+```
+
+### Accessing Grafana
+
+Forward the Grafana service to the local machine:
+
+```bash
+kubectl port-forward svc/monitoring-grafana 3000:80 -n monitoring
+```
+
+Open Grafana in the browser:
+
+```text
+http://localhost:3000
+```
+
+#### Default Credentials
+
+```text
+username: admin
+password: for password run "kubectl --namespace monitoring get secrets monitoring-grafana -o jsonpath="{.data.admin-password}" | base64 -d ; echo"
+```
+
+### Verifying Metrics Collection
+
+Prometheus automatically scrapes metrics from:
+
+- Kubernetes nodes
+- Running pods
+- kube-state-metrics
+- Node exporter
+
+To confirm metrics are available:
+
+```bash
+kubectl top pods
+```
+
+Example output:
+
+```text
+NAME                          CPU(cores)   MEMORY(bytes)
+stress-app-xxxxx              1000m        200Mi
+```
+
+This confirms that resource metrics are being collected.
+
+### Visualizing Pod CPU Usage
+
+A stress testing application was deployed earlier to simulate high CPU utilization.
+
+When the stress endpoint is triggered:
+
+```text
+/cpu-stress
+```
+
+the application increases CPU consumption.
+
+Prometheus collects these metrics and Grafana dashboards display the usage over time.
+
+Example CPU query used in dashboards:
+
+```promql
+sum(rate(container_cpu_usage_seconds_total{namespace="default"}[5m])) by (pod)
+```
+
+This query calculates CPU usage for each pod over time.
+
+### Dashboard Visualization
+
+Grafana dashboards visualize:
+
+- Pod CPU usage
+- Pod memory consumption
+- Node CPU utilization
+- Node memory usage
+- Pod restart count
+- Pod status
+
+These dashboards help monitor workload behavior and detect anomalies.
+
+### Testing Monitoring with Stress Application
+
+Trigger CPU load in the application:
+
+```bash
+curl http://<service-url>/cpu-stress
+```
+
+Observe the metrics in Grafana dashboards where CPU utilization increases for the corresponding pod.
+
+This confirms that the monitoring stack is correctly collecting and visualizing metrics.
+
+### Outcome
+
+The Kubernetes cluster is now equipped with a complete monitoring stack capable of:
+
+- Collecting real-time metrics from nodes and pods
+- Visualizing resource usage through Grafana dashboards
+- Monitoring application behavior under load
+
+This monitoring foundation enables the next stage of the platform where alerts and automated responses can be configured based on detected anomalies.
+
 ## 🧠 AI Engine Concept
 
 The AI engine performs automated incident analysis and remediation.
