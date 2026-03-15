@@ -1,29 +1,26 @@
-🤖 AIOps Agentic Self-Healing Kubernetes Platform
+# 🤖 AIOps Agentic Self-Healing Kubernetes Platform
 
 An AI-driven AIOps platform that monitors Kubernetes workloads, analyzes operational signals, and automatically performs remediation actions using Agentic AI workflows.
 
 The system integrates observability tools, Kubernetes automation, and LLM-based reasoning to create a self-healing infrastructure environment.
 
-🚀 Overview
+## 🚀 Overview
 
 Modern cloud infrastructure produces large volumes of metrics, logs, and alerts.
 Operational issues often require manual investigation and remediation.
 
 This project builds an automated incident response system that:
 
-Monitors cluster health using observability tools
+- Monitors cluster health using observability tools
+- Detects anomalies through alerting rules
+- Uses AI to analyze metrics and logs
+- Determines the most appropriate remediation action
+- Executes fixes directly in Kubernetes
+- Generates incident reports for visibility
 
-Detects anomalies through alerting rules
+## 🏗 Architecture
 
-Uses AI to analyze metrics and logs
-
-Determines the most appropriate remediation action
-
-Executes fixes directly in Kubernetes
-
-Generates incident reports for visibility
-
-🏗 Architecture
+```text
                 GitHub
                    │
                 Jenkins
@@ -55,52 +52,41 @@ Generates incident reports for visibility
         │
         ▼
   Kubernetes API Execution
-🛠 Tech Stack
-DevOps
+```
 
-GitHub
+## 🛠 Tech Stack
 
-Docker
+### DevOps
 
-Kubernetes (Minikube)
+- GitHub
+- Docker
+- Kubernetes (Minikube)
+- Helm
+- Jenkins
+- Terraform
+- Ansible
 
-Helm
+### Observability
 
-Jenkins
+- Prometheus
+- Grafana
+- Alertmanager
+- Loki
+- Promtail
 
-Terraform
+### AI / Agentic AI
 
-Ansible
+- Python
+- FastAPI
+- LangGraph
+- LangChain
+- Ollama
+- ChromaDB
+- Streamlit
 
-Observability
+## 📂 Project Structure
 
-Prometheus
-
-Grafana
-
-Alertmanager
-
-Loki
-
-Promtail
-
-AI / Agentic AI
-
-Python
-
-FastAPI
-
-LangGraph
-
-LangChain
-
-Ollama
-
-ChromaDB
-
-Streamlit
-
-📂 Project Structure
+```text
 aiops-agentic-platform/
 
 app/
@@ -131,38 +117,50 @@ docs/
   architecture documentation
 
 README.md
-⚙️ Environment Setup
-Prerequisites
+```
+
+## ⚙️ Environment Setup
+
+### Prerequisites
 
 Install required tools:
 
-Docker Desktop
-Minikube
-kubectl
-Helm
-Python 3.11+
-Ollama
+- Docker Desktop
+- Minikube
+- kubectl
+- Helm
+- Python 3.11+
+- Ollama
 
 MacOS installation example:
 
+```bash
 brew install minikube kubectl helm ollama
-☸️ Kubernetes Cluster
+```
+
+## ☸️ Kubernetes Cluster
 
 The platform runs on a local Kubernetes cluster using Minikube.
 
 Start the cluster:
 
+```bash
 minikube start -p aiops --driver=docker --cpus=4 --memory=6144
+```
 
 Verify cluster:
 
+```bash
 kubectl get nodes
-🧠 AI Engine Concept
+```
+
+## 🧠 AI Engine Concept
 
 The AI engine performs automated incident analysis and remediation.
 
 Core workflow:
 
+```text
 Alert Received
      ↓
 Collect Metrics
@@ -176,57 +174,49 @@ Remediation Decision
 Execute Kubernetes Action
      ↓
 Generate Incident Report
+```
 
 Supported remediation actions:
 
-Restart Pod
+- Restart Pod
+- Scale Deployment
+- Rollback Deployment
+- Ignore Alert
 
-Scale Deployment
-
-Rollback Deployment
-
-Ignore Alert
-
-📊 Observability Stack
+## 📊 Observability Stack
 
 The observability layer collects operational data from the Kubernetes cluster.
 
-Metrics
+- Metrics: Prometheus
+- Visualization: Grafana
+- Alerts: Alertmanager
+- Logs: Loki + Promtail
 
-Prometheus
-
-Visualization
-
-Grafana
-
-Alerts
-
-Alertmanager
-
-Logs
-
-Loki + Promtail
-
-📦 Development Environment
+## 📦 Development Environment
 
 Create Python environment:
 
+```bash
 python3 -m venv venv
 source venv/bin/activate
+```
 
 Install dependencies:
 
+```bash
 pip install fastapi langchain langgraph chromadb kubernetes streamlit
-🔐 Security Notes
+```
 
-Avoid committing secrets or API keys.
+## 🔐 Security Notes
 
-Use .env files for sensitive configuration.
-
-Ensure .env and local virtual environments are ignored in .gitignore.
+- Avoid committing secrets or API keys.
+- Use `.env` files for sensitive configuration.
+- Ensure `.env` and local virtual environments are ignored in `.gitignore`.
 
 Example:
 
+```gitignore
 .env
 venv
 __pycache__
+```
