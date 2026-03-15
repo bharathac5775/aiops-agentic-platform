@@ -1,0 +1,7 @@
+fastapi
+uvicorn
+langchain
+langgraph
+kubernetes
+requests
+chromadb

@@ -11,7 +11,7 @@ spec:
     rules:
 
     - alert: HighPodCPUUsage
-      expr: sum(rate(container_cpu_usage_seconds_total{namespace="default"}[2m])) by (pod) > 0.8
+      expr: sum(rate(container_cpu_usage_seconds_total{namespace="default"}[2m])) by (namespace, pod) > 0.8
       for: 10s
       labels:
         severity: warning

@@ -1,0 +1,51 @@
+global:
+  resolve_timeout: 5m
+
+inhibit_rules:
+- equal:
+  - namespace
+  - alertname
+  source_matchers:
+  - severity = critical
+  target_matchers:
+  - severity =~ warning|info
+- equal:
+  - namespace
+  - alertname
+  source_matchers:
+  - severity = warning
+  target_matchers:
+  - severity = info
+- equal:
+  - namespace
+  source_matchers:
+  - alertname = InfoInhibitor
+  target_matchers:
+  - severity = info
+- target_matchers:
+  - alertname = InfoInhibitor
+
+route:
+  group_by:
+  - namespace
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 1m
+  receiver: "null"
+  routes:
+  - matchers:
+    - alertname = "HighPodCPUUsage"
+    receiver: ai-engine
+  - matchers:
+    - alertname = "Watchdog"
+    receiver: "null"
+
+receivers:
+- name: "ai-engine"
+  webhook_configs:
+  - url: http://ai-engine.default.svc.cluster.local:8000/alerts
+    send_resolved: true
+- name: "null"
+
+templates:
+- /etc/alertmanager/config/*.tmpl
