@@ -119,6 +119,49 @@ docs/
 README.md
 ```
 
+## 🧪 Stress Test Application
+
+A lightweight microservice used to simulate common production failures.
+It generates CPU spikes, memory pressure, and application errors that will later be detected by the observability stack and analyzed by the AI engine.
+
+### Endpoints
+
+| Endpoint | Description |
+|----------|-------------|
+| /health | Application health check |
+| /cpu-stress | Simulates high CPU usage |
+| /memory-leak | Simulates increasing memory usage |
+| /error | Generates application error logs |
+
+### Run Locally
+
+```bash
+cd app/src
+python app.py
+```
+
+The service will run on:
+
+```
+http://localhost:5001
+```
+
+### Example
+
+Trigger CPU stress:
+
+```bash
+curl http://localhost:5001/cpu-stress
+```
+
+System resource usage can be observed using:
+
+```bash
+top
+```
+
+This service will later be deployed in Kubernetes to generate test scenarios for the AIOps platform.
+
 ## ⚙️ Environment Setup
 
 ### Prerequisites
