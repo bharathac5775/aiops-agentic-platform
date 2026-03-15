@@ -186,6 +186,249 @@ docker push bacdocker/aiops-stress-app:v1
 
 The container image will be used later when deploying the application to Kubernetes.
 
+## ☸️ Kubernetes Deployment
+
+The stress test application is deployed to a local Kubernetes cluster using Minikube.
+The container image pushed to Docker Hub is used to create a Kubernetes Deployment and exposed using a NodePort Service.
+
+### Deployment Steps
+
+#### 1) Start Minikube Cluster
+
+Start the cluster using the dedicated profile created for the project.
+
+```bash
+minikube start -p aiops --driver=docker --cpus=4 --memory=6144
+```
+
+Verify cluster status:
+
+```bash
+kubectl get nodes
+```
+
+Expected output:
+
+```text
+NAME    STATUS   ROLES           AGE   VERSION
+aiops   Ready    control-plane
+```
+
+#### 2) Enable Required Minikube Addons
+
+Certain Kubernetes features require additional components.
+
+Enable metrics collection and ingress support:
+
+```bash
+minikube addons enable metrics-server -p aiops
+minikube addons enable ingress -p aiops
+```
+
+Verify metrics-server pod:
+
+```bash
+kubectl get pods -n kube-system
+```
+
+Expected:
+
+```text
+metrics-server-xxxx   1/1   Running
+```
+
+Metrics server is required for:
+
+```bash
+kubectl top pods
+kubectl top nodes
+```
+
+#### 3) Create Kubernetes Deployment
+
+Deployment file:
+
+`k8s/stress-app-deployment.yaml`
+
+Apply the deployment:
+
+```bash
+kubectl apply -f k8s/stress-app-deployment.yaml
+```
+
+Verify deployment:
+
+```bash
+kubectl get deployments
+kubectl get pods
+```
+
+Example output:
+
+```text
+stress-app-69f4d9c755-mgks2   1/1   Running
+```
+
+#### 4) Expose Application with Service
+
+Service file:
+
+`k8s/stress-app-service.yaml`
+
+Apply the service:
+
+```bash
+kubectl apply -f k8s/stress-app-service.yaml
+```
+
+Verify service:
+
+```bash
+kubectl get svc
+```
+
+Example output:
+
+```text
+stress-app-service   NodePort   5001:30007/TCP
+```
+
+### Accessing the Application
+
+Because Minikube runs inside Docker on macOS, direct NodePort access may not always work.
+Minikube provides a helper command that creates a temporary tunnel.
+
+Run:
+
+```bash
+minikube service stress-app-service -p aiops
+```
+
+Example output:
+
+```text
+http://127.0.0.1:53002
+```
+
+The terminal must remain open while the tunnel is active.
+
+### Manual Application Testing
+
+The application endpoints were tested using curl.
+
+#### Health Check
+
+```bash
+curl http://127.0.0.1:<PORT>/health
+```
+
+Expected response:
+
+```json
+{"status":"healthy"}
+```
+
+#### CPU Stress Simulation
+
+```bash
+curl http://127.0.0.1:<PORT>/cpu-stress
+```
+
+This triggers high CPU usage inside the pod.
+
+#### Memory Stress Simulation
+
+```bash
+curl http://127.0.0.1:<PORT>/memory-leak
+```
+
+This increases memory consumption inside the container.
+
+### Monitoring Pod Resource Usage
+
+After enabling metrics-server:
+
+```bash
+kubectl top pods
+```
+
+Example output:
+
+```text
+NAME                          CPU(cores)   MEMORY(bytes)
+stress-app-69f4d9c755-mgks2   1003m        205Mi
+```
+
+This confirms that the stress simulation generates observable resource usage in Kubernetes.
+
+### Issues Encountered
+
+#### Minikube Context Issue
+
+Initial commands failed due to incorrect Kubernetes context.
+
+Fix:
+
+```bash
+kubectl config use-context aiops
+```
+
+#### Metrics API Not Available
+
+`kubectl top pods` initially returned:
+
+```text
+error: Metrics API not available
+```
+
+Resolution:
+
+Enable metrics-server:
+
+```bash
+minikube addons enable metrics-server -p aiops
+```
+
+Wait until the metrics-server pod becomes ready.
+
+#### NodePort Not Reachable
+
+Direct access using:
+
+```text
+http://<minikube-ip>:30007
+```
+
+did not work due to Docker networking limitations on macOS.
+
+Solution:
+
+Use Minikube service tunnel:
+
+```bash
+minikube service stress-app-service -p aiops
+```
+
+### Current Architecture
+
+```text
+Docker Hub
+     ↓
+Kubernetes Deployment
+     ↓
+Stress App Pod
+     ↓
+NodePort Service
+     ↓
+Minikube Tunnel
+     ↓
+Local Access
+```
+
+### Result
+
+The stress testing application is now successfully running inside the Kubernetes cluster and generating measurable CPU and memory load. This prepares the environment for the next stage of the project: integrating the observability stack.
+
 ## ⚙️ Environment Setup
 
 ### Prerequisites
