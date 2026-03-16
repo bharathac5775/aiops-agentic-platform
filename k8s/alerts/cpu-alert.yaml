@@ -5,6 +5,7 @@ metadata:
   namespace: monitoring
   labels:
     release: monitoring
+
 spec:
   groups:
   - name: aiops.rules
@@ -18,3 +19,30 @@ spec:
       annotations:
         summary: "High CPU usage detected"
         description: "Pod CPU usage above 80%"
+
+    - alert: HighMemoryUsage
+      expr: sum(container_memory_working_set_bytes{namespace="default"}) by (pod) > 500000000
+      for: 30s
+      labels:
+        severity: warning
+      annotations:
+        summary: "High Memory Usage"
+        description: "Pod memory usage above threshold"
+
+    - alert: PodCrashLoop
+      expr: increase(kube_pod_container_status_restarts_total[5m]) > 3
+      for: 30s
+      labels:
+        severity: critical
+      annotations:
+        summary: "Pod Crash Loop"
+        description: "Container restarting repeatedly"
+
+    - alert: PodOOMKilled
+      expr: kube_pod_container_status_last_terminated_reason{reason="OOMKilled"} == 1
+      for: 30s
+      labels:
+        severity: critical
+      annotations:
+        summary: "Pod OOMKilled"
+        description: "Container killed due to memory exhaustion"

@@ -1,0 +1,39 @@
+deploymentMode: SingleBinary
+
+loki:
+  auth_enabled: false
+  useTestSchema: true
+  limits_config:
+    retention_period: 168h
+    ingestion_rate_mb: 4
+    ingestion_burst_size_mb: 8
+    per_stream_rate_limit: 2MB
+    per_stream_rate_limit_burst: 8MB
+    max_query_series: 500
+    max_global_streams_per_user: 5000
+  compactor:
+    retention_enabled: true
+    delete_request_store: filesystem
+  commonConfig:
+    replication_factor: 1
+  storage:
+    type: filesystem
+
+singleBinary:
+  replicas: 1
+  resources:
+    requests:
+      cpu: 200m
+      memory: 512Mi
+    limits:
+      cpu: 1000m
+      memory: 1Gi
+
+read:
+  replicas: 0
+
+write:
+  replicas: 0
+
+backend:
+  replicas: 0

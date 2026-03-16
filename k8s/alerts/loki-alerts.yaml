@@ -1,0 +1,28 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: aiops-loki-alert-rules
+  namespace: monitoring
+  labels:
+    release: monitoring
+spec:
+  groups:
+    - name: aiops.loki.rules
+      rules:
+        - alert: LokiPodHighMemory
+          expr: |
+            (
+              sum by (pod) (
+                container_memory_working_set_bytes{namespace="monitoring", pod=~"loki-.*", container="loki"}
+              )
+              /
+              sum by (pod) (
+                kube_pod_container_resource_limits{namespace="monitoring", pod=~"loki-.*", container="loki", resource="memory", unit="byte"}
+              )
+            ) > 0.85
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Loki pod memory usage is high"
+            description: "Loki pod {{ $labels.pod }} is using more than 85% of configured memory limit."

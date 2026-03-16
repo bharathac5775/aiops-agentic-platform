@@ -946,13 +946,13 @@ The AI engine is packaged as a Docker container for Kubernetes deployment.
 Build image:
 
 ```bash
-docker build -t bacdocker/ai-engine:v2 .
+docker build -t bacdocker/ai-engine:v3 ./ai-engine
 ```
 
 Push image:
 
 ```bash
-docker push bacdocker/ai-engine:v2
+docker push bacdocker/ai-engine:v3
 ```
 
 ### Deploying AI Engine to Kubernetes
@@ -992,21 +992,22 @@ Routing rule:
 ```yaml
 routes:
 - matchers:
-  - alertname = "HighPodCPUUsage"
+     - alertname =~ "HighPodCPUUsage|HighMemoryUsage|PodCrashLoop|PodOOMKilled"
   receiver: ai-engine
 ```
 
-### Prometheus Alert Rule
+### Prometheus Alert Rules
 
-Prometheus evaluates pod CPU usage and triggers alerts above threshold.
+Prometheus now evaluates multiple operational risk conditions from a single rules file: `k8s/alerts/cpu-alert.yaml`.
 
-Alert name: `HighPodCPUUsage`
+Configured alerts:
 
-Trigger condition: CPU usage `> 80%`
+- `HighPodCPUUsage`
+- `HighMemoryUsage`
+- `PodCrashLoop`
+- `PodOOMKilled`
 
-Rule file: `k8s/alerts/cpu-alert.yaml`
-
-Example expression:
+Example CPU expression:
 
 ```promql
 sum(rate(container_cpu_usage_seconds_total{namespace="default"}[2m])) by (namespace, pod) > 0.8
@@ -1061,6 +1062,132 @@ Next stage adds deeper AI-driven investigation capabilities:
 - Recommend or execute remediation actions
 
 This will evolve the platform into a self-healing Kubernetes system.
+
+## ✅ Latest Implemented Changes (Loki, Alerting, AI Engine)
+
+This section summarizes the actual implementation and troubleshooting work completed in the current project iteration.
+
+### Loki + Promtail Setup (Final Working State)
+
+The initial logging setup based on older `loki-stack` had datasource and compatibility issues.
+We migrated to the modern charts and validated end-to-end log ingestion.
+
+#### What Changed
+
+- Removed old Loki stack deployment
+- Installed `grafana/loki` (SingleBinary mode)
+- Installed `grafana/promtail` as log shipper
+- Added dedicated Helm values files:
+     - `k8s/loki/loki-values.yaml`
+     - `k8s/loki/promtail-values.yaml`
+- Removed unused/legacy config artifacts:
+     - `k8s/loki/loki-grafana-datasource-configmap.yaml`
+     - `k8s/loki/backup/`
+
+#### Final Loki Configuration Highlights
+
+- Single binary deployment for local/minikube simplicity
+- Filesystem storage backend
+- Retention and ingestion controls enabled
+- Resource requests/limits configured for Loki and Promtail
+
+#### Stability and Safety Improvements
+
+- Added runtime safeguards for memory/ingestion pressure
+- Added Prometheus alert for Loki memory pressure:
+     - `k8s/alerts/loki-alerts.yaml`
+     - Alert name: `LokiPodHighMemory`
+
+#### Verification Performed
+
+- Loki pod healthy and running updated version (`3.6.7`)
+- Promtail shipping logs to Loki gateway
+- Grafana Loki datasource healthy
+- Logs queryable from Grafana Explore
+
+### Alerting Changes Completed
+
+Alerting was expanded from a single CPU alert to multi-condition operational coverage.
+
+#### Prometheus Rules Updated
+
+File: `k8s/alerts/cpu-alert.yaml`
+
+Now includes 4 alerts:
+
+1. `HighPodCPUUsage`
+2. `HighMemoryUsage`
+3. `PodCrashLoop`
+4. `PodOOMKilled`
+
+#### Alertmanager Routing and Webhook Fixes
+
+File: `k8s/alertmanager/alertmanager.yaml`
+
+Completed changes:
+
+- Fixed webhook endpoint to in-cluster FQDN:
+     - `http://ai-engine.default.svc.cluster.local:8000/alerts`
+- Added missing `null` receiver to keep config valid
+- Set safe default route to `null`
+- Added matcher-based route to forward all 4 AIOps alerts to AI engine:
+     - `alertname =~ "HighPodCPUUsage|HighMemoryUsage|PodCrashLoop|PodOOMKilled"`
+
+This removed noisy/unrelated forwarding and ensured only target alerts trigger AI workflows.
+
+### AI Engine Changes Completed
+
+File: `ai-engine/api/main.py`
+
+The Alertmanager webhook handler was hardened for reliable production-like behavior.
+
+#### Processing Logic Improvements
+
+- Added payload validation and alert list validation
+- Process only `firing` alerts
+- Ignore `resolved` alerts for remediation actions
+- Added per-request counters:
+     - processed
+     - ignored
+     - failed
+
+#### Logging Improvements
+
+- Added UTC timestamped structured logs
+- Added explicit log stages:
+     - `[RECEIVED]`
+     - `[PROCESSING]`
+     - `[IGNORED]`
+     - `[FAILED]`
+     - `[SUMMARY]`
+
+This reduced duplicate/noise execution and improved alert traceability.
+
+### Container and Deployment Updates
+
+The AI engine image and Kubernetes deployment were updated to carry all latest changes.
+
+- Built and pushed image: `bacdocker/ai-engine:v3`
+- Updated deployment file: `k8s/ai-engine-deployment.yaml`
+- Rolled out deployment and verified running image is `v3`
+
+### Current End-to-End Flow
+
+```text
+Stress App Issue
+          ↓
+Prometheus Rule Fires (CPU/Memory/CrashLoop/OOM)
+          ↓
+Alertmanager Route Match
+          ↓
+Webhook → AI Engine
+          ↓
+FastAPI validates + filters firing alerts
+          ↓
+LangGraph workflow invoked
+          ↓
+Investigation / remediation decision
+```
 
 ## 🧠 AI Engine Concept
 
