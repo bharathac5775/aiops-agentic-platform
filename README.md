@@ -1063,130 +1063,156 @@ Next stage adds deeper AI-driven investigation capabilities:
 
 This will evolve the platform into a self-healing Kubernetes system.
 
-## ✅ Latest Implemented Changes (Loki, Alerting, AI Engine)
+## 🗂️ Complete Setup Guide (Loki, Alerting, AI Engine)
 
-This section summarizes the actual implementation and troubleshooting work completed in the current project iteration.
+This section provides standard installation and configuration steps so a new user can set up logging, alerting, and AI-driven alert handling from scratch.
 
-### Loki + Promtail Setup (Final Working State)
+### 1) Loki + Promtail Installation (Helm)
 
-The initial logging setup based on older `loki-stack` had datasource and compatibility issues.
-We migrated to the modern charts and validated end-to-end log ingestion.
+Loki stores logs and Promtail collects logs from Kubernetes nodes/pods and ships them to Loki.
 
-#### What Changed
+#### Files Used
 
-- Removed old Loki stack deployment
-- Installed `grafana/loki` (SingleBinary mode)
-- Installed `grafana/promtail` as log shipper
-- Added dedicated Helm values files:
-     - `k8s/loki/loki-values.yaml`
-     - `k8s/loki/promtail-values.yaml`
-- Removed unused/legacy config artifacts:
-     - `k8s/loki/loki-grafana-datasource-configmap.yaml`
-     - `k8s/loki/backup/`
+- `k8s/loki/loki-values.yaml`
+- `k8s/loki/promtail-values.yaml`
 
-#### Final Loki Configuration Highlights
+#### Install Steps
 
-- Single binary deployment for local/minikube simplicity
-- Filesystem storage backend
-- Retention and ingestion controls enabled
-- Resource requests/limits configured for Loki and Promtail
+Add Grafana Helm repo:
 
-#### Stability and Safety Improvements
+```bash
+helm repo add grafana https://grafana.github.io/helm-charts
+helm repo update
+```
 
-- Added runtime safeguards for memory/ingestion pressure
-- Added Prometheus alert for Loki memory pressure:
-     - `k8s/alerts/loki-alerts.yaml`
-     - Alert name: `LokiPodHighMemory`
+Install Loki in `monitoring` namespace:
 
-#### Verification Performed
+```bash
+helm upgrade --install loki grafana/loki \
+  -n monitoring \
+  -f k8s/loki/loki-values.yaml
+```
 
-- Loki pod healthy and running updated version (`3.6.7`)
-- Promtail shipping logs to Loki gateway
-- Grafana Loki datasource healthy
-- Logs queryable from Grafana Explore
+Install Promtail in `monitoring` namespace:
 
-### Alerting Changes Completed
+```bash
+helm upgrade --install promtail grafana/promtail \
+  -n monitoring \
+  -f k8s/loki/promtail-values.yaml
+```
 
-Alerting was expanded from a single CPU alert to multi-condition operational coverage.
+#### Verify Installation
 
-#### Prometheus Rules Updated
+```bash
+kubectl get pods -n monitoring | egrep 'loki|promtail'
+kubectl get svc -n monitoring | grep loki
+```
 
-File: `k8s/alerts/cpu-alert.yaml`
+Optional: verify logs in Grafana Explore (Datasource: Loki).
 
-Now includes 4 alerts:
+### 2) Prometheus Alert Rules Setup
 
-1. `HighPodCPUUsage`
-2. `HighMemoryUsage`
-3. `PodCrashLoop`
-4. `PodOOMKilled`
+Apply alert rules file:
 
-#### Alertmanager Routing and Webhook Fixes
+```bash
+kubectl apply -f k8s/alerts/cpu-alert.yaml
+```
 
-File: `k8s/alertmanager/alertmanager.yaml`
+Verify rules:
 
-Completed changes:
+```bash
+kubectl get prometheusrules -n monitoring
+```
 
-- Fixed webhook endpoint to in-cluster FQDN:
-     - `http://ai-engine.default.svc.cluster.local:8000/alerts`
-- Added missing `null` receiver to keep config valid
-- Set safe default route to `null`
-- Added matcher-based route to forward all 4 AIOps alerts to AI engine:
-     - `alertname =~ "HighPodCPUUsage|HighMemoryUsage|PodCrashLoop|PodOOMKilled"`
+Configured alerts include:
 
-This removed noisy/unrelated forwarding and ensured only target alerts trigger AI workflows.
+- `HighPodCPUUsage`
+- `HighMemoryUsage`
+- `PodCrashLoop`
+- `PodOOMKilled`
 
-### AI Engine Changes Completed
+Optional Loki safety alert file:
 
-File: `ai-engine/api/main.py`
+```bash
+kubectl apply -f k8s/alerts/loki-alerts.yaml
+```
 
-The Alertmanager webhook handler was hardened for reliable production-like behavior.
+### 3) Alertmanager Webhook Configuration
 
-#### Processing Logic Improvements
+Alertmanager forwards selected alerts to the AI engine webhook endpoint.
 
-- Added payload validation and alert list validation
-- Process only `firing` alerts
-- Ignore `resolved` alerts for remediation actions
-- Added per-request counters:
-     - processed
-     - ignored
-     - failed
+Configuration file:
 
-#### Logging Improvements
+- `k8s/alertmanager/alertmanager.yaml`
 
-- Added UTC timestamped structured logs
-- Added explicit log stages:
-     - `[RECEIVED]`
-     - `[PROCESSING]`
-     - `[IGNORED]`
-     - `[FAILED]`
-     - `[SUMMARY]`
+Apply configuration:
 
-This reduced duplicate/noise execution and improved alert traceability.
+```bash
+kubectl apply -f k8s/alertmanager/alertmanager.yaml
+```
 
-### Container and Deployment Updates
+Required webhook endpoint:
 
-The AI engine image and Kubernetes deployment were updated to carry all latest changes.
+- `http://ai-engine.default.svc.cluster.local:8000/alerts`
 
-- Built and pushed image: `bacdocker/ai-engine:v3`
-- Updated deployment file: `k8s/ai-engine-deployment.yaml`
-- Rolled out deployment and verified running image is `v3`
+Routing pattern for AIOps alerts:
 
-### Current End-to-End Flow
+- `alertname =~ "HighPodCPUUsage|HighMemoryUsage|PodCrashLoop|PodOOMKilled"`
+
+### 4) AI Engine Build and Deployment
+
+Build and push AI engine container image:
+
+```bash
+docker build -t bacdocker/ai-engine:v3 ./ai-engine
+docker push bacdocker/ai-engine:v3
+```
+
+Deploy AI engine manifests:
+
+```bash
+kubectl apply -f k8s/ai-engine-deployment.yaml
+kubectl apply -f k8s/ai-engine-service.yaml
+kubectl rollout status deployment/ai-engine -n default
+```
+
+Verify running image:
+
+```bash
+kubectl get pods -n default -l app=ai-engine -o jsonpath='{.items[0].spec.containers[0].image}' && echo
+```
+
+### 5) End-to-End Validation
+
+1. Trigger stress endpoint:
+
+```bash
+curl http://<stress-app-service>/cpu-stress
+```
+
+2. Check alerts in Prometheus/Alertmanager.
+3. Check AI engine logs:
+
+```bash
+kubectl logs -n default -l app=ai-engine -f
+```
+
+### Expected Platform Flow
 
 ```text
 Stress App Issue
-          ↓
-Prometheus Rule Fires (CPU/Memory/CrashLoop/OOM)
-          ↓
-Alertmanager Route Match
-          ↓
-Webhook → AI Engine
-          ↓
-FastAPI validates + filters firing alerts
-          ↓
-LangGraph workflow invoked
-          ↓
-Investigation / remediation decision
+    ↓
+Prometheus Rule Fires
+    ↓
+Alertmanager Routes Alert
+    ↓
+Webhook to AI Engine
+    ↓
+FastAPI receives alert
+    ↓
+LangGraph workflow runs
+    ↓
+Remediation decision
 ```
 
 ## 🧠 AI Engine Concept
