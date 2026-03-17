@@ -16,6 +16,6 @@ spec:
     spec:
       containers:
       - name: stress-app
-        image: bacdocker/aiops-stress-app:v1
+        image: bacdocker/aiops-stress-app:v2
         ports:
         - containerPort: 5001
