@@ -14,6 +14,6 @@ spec:
     spec:
       containers:
       - name: ai-engine
-        image: bacdocker/ai-engine:v7
+        image: bacdocker/ai-engine:v8
         ports:
         - containerPort: 8000
