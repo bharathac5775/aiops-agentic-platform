@@ -982,6 +982,13 @@ Prometheus client used by workflow:
 - Restart query pattern (5m): `sum(increase(kube_pod_container_status_restarts_total{namespace="default",pod="<pod-name>"}[5m]))`
 - OOMKilled query pattern: `max(kube_pod_container_status_last_terminated_reason{namespace="default",pod="<pod-name>",reason="OOMKilled"})`
 
+Loki client used by workflow:
+
+- File: `ai-engine/tools/loki_client.py`
+- API endpoint: `http://loki.monitoring.svc.cluster.local:3100/loki/api/v1/query_range`
+- Log selector pattern: `{pod="<pod-name>"}` (fallback `{kubernetes_pod_name="<pod-name>"}`)
+- Query type: range query (required for log stream queries)
+
 Alert-aware decision mapping in workflow:
 
 - `HighPodCPUUsage` uses CPU thresholds for scale/monitor/no-action
@@ -998,13 +1005,13 @@ The AI engine is packaged as a Docker container for Kubernetes deployment.
 Build image:
 
 ```bash
-docker build -t bacdocker/ai-engine:v8 ./ai-engine
+docker build -t bacdocker/ai-engine:v10 ./ai-engine
 ```
 
 Push image:
 
 ```bash
-docker push bacdocker/ai-engine:v8
+docker push bacdocker/ai-engine:v10
 ```
 
 ### Deploying AI Engine to Kubernetes
@@ -1096,7 +1103,10 @@ Received Alert Payload
 Analyzing alert: HighPodCPUUsage
 Fetching Prometheus metrics for pod: <pod>
 [METRICS] Pod=<pod> CPU=<value> MEM=<value> RESTARTS_5M=<value> OOMKILLED=<value>
+Fetching logs from Loki for pod: <pod>
+[LOGS] Retrieved <n> log lines
 Deciding remediation action
+[LOG_ANALYSIS] Sample logs: ["...", "...", "..."]
 [DECISION_INPUT] alert=<alert_name> pod=<pod> cpu=<value> memory_bytes=<value> restarts_5m=<value> oomkilled=<value>
 ```
 
@@ -1248,8 +1258,8 @@ Routing pattern for AIOps alerts:
 Build and push AI engine container image:
 
 ```bash
-docker build -t bacdocker/ai-engine:v8 ./ai-engine
-docker push bacdocker/ai-engine:v8
+docker build -t bacdocker/ai-engine:v10 ./ai-engine
+docker push bacdocker/ai-engine:v10
 ```
 
 Deploy AI engine manifests:

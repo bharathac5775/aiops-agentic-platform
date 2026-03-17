@@ -5,6 +5,7 @@ from tools.prometheus_client import (
     get_pod_restart_count,
     get_pod_oomkilled_status,
 )
+from tools.loki_client import get_pod_logs
 
 
 def analyze_alert(state):
@@ -64,6 +65,22 @@ def collect_metrics(state):
     return state
 
 
+def collect_logs(state):
+    pod = state.get("pod")
+
+    print(f"Fetching logs from Loki for pod: {pod}")
+
+    try:
+        logs = get_pod_logs(pod)
+        state["logs"] = logs
+        print(f"[LOGS] Retrieved {len(logs)} log lines")
+    except Exception as e:
+        print(f"Loki error: {e}")
+        state["logs"] = []
+
+    return state
+
+
 def decide_action(state):
     print("Deciding remediation action")
 
@@ -73,6 +90,16 @@ def decide_action(state):
     restarts = state.get("metrics", {}).get("restart_count_5m", 0)
     oomkilled = state.get("metrics", {}).get("oomkilled", 0)
     pod = state.get("pod", "unknown")
+    logs = state.get("logs", [])
+
+    print(f"[LOG_ANALYSIS] Sample logs: {logs[-3:]}")
+
+    error_keywords = ["error", "exception", "fail", "traceback"]
+    error_logs = [
+        log for log in logs
+        if any(keyword in log.lower() for keyword in error_keywords)
+    ]
+    timeout_logs = [log for log in logs if "timeout" in log.lower()]
 
     print(
         "[DECISION_INPUT] "
@@ -90,10 +117,18 @@ def decide_action(state):
             decision = "investigate"
             root_cause = "CPU metrics unavailable or pod idle"
             confidence = 0.5
-        elif cpu > 0.85:
+        elif cpu > 0.85 and timeout_logs:
             decision = "scale deployment"
-            root_cause = "High CPU saturation"
+            root_cause = "High CPU + timeout errors in logs"
             confidence = 0.95
+        elif cpu > 0.85 and error_logs:
+            decision = "restart pod"
+            root_cause = "High CPU with application errors in logs"
+            confidence = 0.92
+        elif cpu > 0.85:
+            decision = "monitor"
+            root_cause = "High CPU without corroborating error logs"
+            confidence = 0.82
         elif cpu > 0.7:
             decision = "monitor"
             root_cause = "Moderate CPU usage"
@@ -108,6 +143,14 @@ def decide_action(state):
             decision = "investigate"
             root_cause = "Memory metrics unavailable"
             confidence = 0.5
+        elif any("oom" in log.lower() for log in logs) or oomkilled >= 1:
+            decision = "increase memory limit and restart pod"
+            root_cause = "Memory pressure and OOM indicators in logs/metrics"
+            confidence = 0.95
+        elif memory > 500_000_000 and error_logs:
+            decision = "restart pod"
+            root_cause = "High memory with application error logs"
+            confidence = 0.9
         elif memory > 500_000_000:
             decision = "restart pod"
             root_cause = "High memory working set detected"
@@ -118,10 +161,14 @@ def decide_action(state):
             confidence = 0.75
 
     elif alert_name == "PodCrashLoop":
-        if restarts > 3:
+        if restarts > 3 and error_logs:
+            decision = "restart pod"
+            root_cause = "CrashLoop pattern with recurring application errors"
+            confidence = 0.95
+        elif restarts > 3:
             decision = "investigate and restart pod"
             root_cause = "Frequent container restarts (CrashLoop pattern)"
-            confidence = 0.95
+            confidence = 0.9
         else:
             decision = "monitor"
             root_cause = "Restart rate currently below critical threshold"
@@ -150,6 +197,8 @@ def decide_action(state):
         "root_cause": root_cause,
         "recommendation": decision,
         "confidence": confidence,
+        "log_error_count": len(error_logs),
+        "log_insights": logs[-5:],
         "observed_metrics": {
             "cpu_usage": cpu,
             "memory_usage_bytes": memory,
@@ -167,11 +216,13 @@ def build_graph():
 
     graph.add_node("analyze_alert", analyze_alert)
     graph.add_node("collect_metrics", collect_metrics)
+    graph.add_node("collect_logs", collect_logs)
     graph.add_node("decide_action", decide_action)
 
     graph.set_entry_point("analyze_alert")
 
     graph.add_edge("analyze_alert", "collect_metrics")
-    graph.add_edge("collect_metrics", "decide_action")
+    graph.add_edge("collect_metrics", "collect_logs")
+    graph.add_edge("collect_logs", "decide_action")
 
     return graph.compile()
