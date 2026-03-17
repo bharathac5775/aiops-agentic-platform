@@ -10,16 +10,44 @@ def analyze_alert(state):
 
     print(f"Analyzing alert: {alertname} on pod {pod}")
 
+    state["alert_name"] = alertname
+    state["pod"] = pod
+
     return state
 
 
 def collect_metrics(state):
     print("Collecting metrics from Prometheus")
+
+    # Placeholder (Day 9 will replace this)
+    state["metrics"] = {
+        "cpu_usage": "85%",
+        "memory_usage": "60%"
+    }
+
     return state
 
 
 def decide_action(state):
     print("Deciding remediation action")
+
+    alertname = state.get("alert_name")
+
+    # Simple rule-based decision (Day 12 will replace with LLM)
+    if alertname == "HighPodCPUUsage":
+        decision = "scale deployment"
+    else:
+        decision = "no action"
+
+    state["decision"] = decision
+
+    # Final structured result
+    state["result"] = {
+        "root_cause": "High CPU usage",
+        "recommendation": decision,
+        "confidence": 0.85
+    }
+
     return state
 
 

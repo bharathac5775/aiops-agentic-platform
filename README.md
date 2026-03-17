@@ -365,69 +365,62 @@ This confirms that the stress simulation generates observable resource usage in 
 
 #### Minikube Context Issue
 
-Initial commands failed due to incorrect Kubernetes context.
+In local setups with multiple clusters/profiles, `kubectl` may point to the wrong context.
 
-Fix:
+Typical symptoms:
+
+- `kubectl get pods` shows unexpected resources
+- `kubectl top pods` fails unexpectedly
+- service URLs or port-forward targets do not match deployed workloads
+
+Verify current context:
+
+```bash
+kubectl config current-context
+```
+
+Switch to the project context:
 
 ```bash
 kubectl config use-context aiops
 ```
 
-#### Metrics API Not Available
+Confirm cluster and profile health:
 
-`kubectl top pods` initially returned:
-
-```text
-error: Metrics API not available
+```bash
+kubectl get nodes
+minikube profile list
+minikube status -p aiops
 ```
 
-Resolution:
+If the profile is stopped, start it:
 
-Enable metrics-server:
+```bash
+minikube start -p aiops --driver=docker --cpus=4 --memory=6144
+```
+
+Ensure metrics addon is enabled:
 
 ```bash
 minikube addons enable metrics-server -p aiops
 ```
 
-Wait until the metrics-server pod becomes ready.
-
-#### NodePort Not Reachable
-
-Direct access using:
-
-```text
-http://<minikube-ip>:30007
-```
-
-did not work due to Docker networking limitations on macOS.
-
-Solution:
-
-Use Minikube service tunnel:
+Verify metrics-server pod:
 
 ```bash
-minikube service stress-app-service -p aiops
+kubectl get pods -n kube-system | grep metrics-server
 ```
 
-### Current Architecture
+Then re-check workloads:
 
-```text
-Docker Hub
-     ↓
-Kubernetes Deployment
-     ↓
-Stress App Pod
-     ↓
-NodePort Service
-     ↓
-Minikube Tunnel
-     ↓
-Local Access
+```bash
+kubectl get pods
+kubectl get pods -n monitoring
 ```
 
 ### Result
 
-The stress testing application is now successfully running inside the Kubernetes cluster and generating measurable CPU and memory load. This prepares the environment for the next stage of the project: integrating the observability stack.
+The stress testing application is running inside the Kubernetes cluster and generating measurable CPU and memory load.
 
 ## ⚙️ Environment Setup
 
@@ -646,13 +639,13 @@ The Kubernetes cluster is now equipped with a complete monitoring stack capable 
 - Visualizing resource usage through Grafana dashboards
 - Monitoring application behavior under load
 
-This monitoring foundation enables the next stage of the platform where alerts and automated responses can be configured based on detected anomalies.
+This monitoring foundation enables alerting and automated response capabilities.
 
 ## 🚨 Alerting System Setup and Verification
 
 ### Objective
 
-Implemented Kubernetes alerting using Prometheus alert rules and Alertmanager to detect abnormal pod CPU usage.
+Kubernetes alerting is configured using Prometheus alert rules and Alertmanager to detect abnormal pod CPU usage.
 The target condition is pod CPU usage above 80%, validating end-to-end anomaly detection.
 
 ### Alerting Flow
@@ -791,26 +784,6 @@ Validated end-to-end alerting pipeline:
 
 This confirms the platform can automatically detect infrastructure anomalies.
 
-### Next Phase
-
-Integrate Alertmanager webhook with the AI Engine for autonomous response:
-
-```text
-Prometheus
-↓
-Alertmanager
-↓
-Webhook
-↓
-AI Engine (FastAPI)
-↓
-LangGraph workflow
-↓
-Root cause analysis
-↓
-Automated remediation
-```
-
 ## 🤖 AI Engine Integration with Alertmanager
 
 ### Objective
@@ -822,25 +795,17 @@ This enables the platform to move from passive monitoring to AI-driven incident 
 ### Architecture Flow
 
 ```text
-Application Failure / Resource Spike
-     │
-     ▼
-Prometheus collects metrics
-     │
-     ▼
-Prometheus Alert Rule evaluates condition
-     │
-     ▼
-Alertmanager receives alert
-     │
-     ▼
-Webhook notification sent to AI Engine
-     │
-     ▼
-FastAPI service receives alert
-     │
-     ▼
-LangGraph workflow starts investigation
+Alertmanager → AI Engine (/alerts)
+                         │
+                         ▼
+                  LangGraph Workflow
+                         │
+         ┌───────────────┼───────────────┐
+         ▼               ▼               ▼
+   Analyze Alert   Collect Metrics   Decide Action
+                         │
+                         ▼
+                 Structured AI Output
 ```
 
 ### AI Engine Microservice
@@ -893,6 +858,42 @@ Example payload:
 ```
 
 The AI engine extracts alert information and triggers the workflow.
+
+#### Analyze Endpoint
+
+`POST /analyze`
+
+- Accepts alert payload
+- Executes AI workflow
+- Returns structured RCA response
+
+Example response:
+
+```json
+{
+     "analysis": {
+          "root_cause": "High CPU usage",
+          "recommendation": "scale deployment",
+          "confidence": 0.85
+     }
+}
+```
+
+#### Remediation Endpoint
+
+`POST /remediate`
+
+- Accepts remediation decision input
+- Simulates remediation execution
+
+Example response:
+
+```json
+{
+     "status": "executed",
+     "action": "scale deployment"
+}
+```
 
 ### Alert Processing Logic
 
@@ -1051,17 +1052,6 @@ Deciding remediation action
 The system now supports automatic alert delivery from Alertmanager to AI engine, evolving the platform from monitoring-only to AI-assisted incident investigation.
 
 Alerts generated in Kubernetes can now automatically initiate AI-based workflows.
-
-### Next Stage
-
-Next stage adds deeper AI-driven investigation capabilities:
-
-- Query Prometheus metrics
-- Collect pod logs from Kubernetes
-- Perform root cause analysis using LLMs
-- Recommend or execute remediation actions
-
-This will evolve the platform into a self-healing Kubernetes system.
 
 ## 🔁 One-Command Reproducible Setup
 

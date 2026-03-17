@@ -11,9 +11,11 @@ def log(level: str, message: str):
     timestamp = datetime.now(timezone.utc).isoformat()
     print(f"[{timestamp}] [{level}] {message}")
 
+
 @app.get("/")
 def health():
     return {"status": "AI Engine running"}
+
 
 @app.post("/alerts")
 async def receive_alert(request: Request):
@@ -50,10 +52,15 @@ async def receive_alert(request: Request):
         log("PROCESSING", f"{alert_name} on pod {pod_name}")
 
         try:
-            workflow.invoke({
+            state = workflow.invoke({
                 "alert": alert
             })
+
+            result = state.get("result", {})
+
+            log("RESULT", f"{result}")
             processed += 1
+
         except Exception as error:
             log("FAILED", f"{alert_name} on pod {pod_name}: {error}")
             failed += 1
@@ -65,4 +72,46 @@ async def receive_alert(request: Request):
         "processed": processed,
         "ignored": ignored,
         "failed": failed
+    }
+
+
+#  Analyze API
+@app.post("/analyze")
+async def analyze(request: Request):
+
+    data = await request.json()
+
+    alert = data.get("alert")
+
+    log("ANALYZE", "Running RCA workflow")
+
+    try:
+        state = workflow.invoke({
+            "alert": alert
+        })
+
+        result = state.get("result", {})
+
+        return {
+            "analysis": result
+        }
+
+    except Exception as e:
+        log("ERROR", f"Analyze failed: {e}")
+        return {"error": str(e)}
+
+
+# Remediation API
+@app.post("/remediate")
+async def remediate(request: Request):
+
+    data = await request.json()
+    decision = data.get("decision")
+
+    log("REMEDIATE", f"Executing action: {decision}")
+
+    # Placeholder → actual K8s logic comes Day 14
+    return {
+        "status": "executed",
+        "action": decision
     }
