@@ -1063,6 +1063,47 @@ Next stage adds deeper AI-driven investigation capabilities:
 
 This will evolve the platform into a self-healing Kubernetes system.
 
+## 🔁 One-Command Reproducible Setup
+
+To keep the project fully declarative and repeatable, use the scripts in `scripts/`.
+
+### Bootstrap (install/reconcile everything)
+
+From project root:
+
+```bash
+./scripts/bootstrap.sh --start-minikube --profile=aiops
+```
+
+If Minikube is already running, you can run:
+
+```bash
+./scripts/bootstrap.sh --profile=aiops
+```
+
+What it does:
+
+- Starts Minikube profile (optional via `--start-minikube`)
+- Installs/updates Helm releases (`monitoring`, `loki`, `promtail`)
+- Applies app manifests (`stress-app`, `ai-engine`)
+- Applies alert rules (`cpu-alert`, `loki-alerts`)
+- Reconciles Alertmanager config from `k8s/alertmanager/alertmanager.yaml`
+
+### Reset (clean installed resources)
+
+```bash
+./scripts/reset.sh --profile=aiops
+```
+
+This removes Helm releases and applied manifests so the environment can be recreated cleanly.
+
+Recommended full recreate sequence:
+
+```bash
+./scripts/reset.sh --profile=aiops
+./scripts/bootstrap.sh --start-minikube --profile=aiops
+```
+
 ## 🗂️ Complete Setup Guide (Loki, Alerting, AI Engine)
 
 This section provides standard installation and configuration steps so a new user can set up logging, alerting, and AI-driven alert handling from scratch.
