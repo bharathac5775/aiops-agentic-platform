@@ -14,6 +14,16 @@ spec:
     spec:
       containers:
       - name: ai-engine
-        image: bacdocker/ai-engine:v10
+        image: bacdocker/ai-engine:v13
         ports:
         - containerPort: 8000
+        env:
+        - name: OLLAMA_MODEL
+          value: llama3.1:8b
+        resources:
+          requests:
+            cpu: "250m"
+            memory: "512Mi"
+          limits:
+            cpu: "1"
+            memory: "1Gi"

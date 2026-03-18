@@ -970,6 +970,12 @@ Analyze Alert Context
 Collect Metrics (Prometheus API: CPU, memory, restart, OOM)
       │
       ▼
+Collect Logs (Loki)
+     │
+     ▼
+Run LLM RCA (Ollama)
+     │
+     ▼
 Decide Remediation Strategy (alert-aware)
 ```
 
@@ -989,6 +995,14 @@ Loki client used by workflow:
 - Log selector pattern: `{pod="<pod-name>"}` (fallback `{kubernetes_pod_name="<pod-name>"}`)
 - Query type: range query (required for log stream queries)
 
+LLM client used by workflow:
+
+- File: `ai-engine/tools/llm_client.py`
+- Endpoint: `http://host.docker.internal:11434/api/generate`
+- Model behavior: code default is `llama3.2:latest`, and runtime model can be overridden through `OLLAMA_MODEL` (deployment currently uses `llama3.1:8b`)
+- Output handling: JSON extraction with deterministic rule-based fallback if parsing fails
+- Network validation: connectivity from AI engine pod to Ollama endpoint was validated from inside pod (`http://host.docker.internal:11434`)
+
 Alert-aware decision mapping in workflow:
 
 - `HighPodCPUUsage` uses CPU thresholds for scale/monitor/no-action
@@ -1005,13 +1019,13 @@ The AI engine is packaged as a Docker container for Kubernetes deployment.
 Build image:
 
 ```bash
-docker build -t bacdocker/ai-engine:v10 ./ai-engine
+docker build -t bacdocker/ai-engine:v13 ./ai-engine
 ```
 
 Push image:
 
 ```bash
-docker push bacdocker/ai-engine:v10
+docker push bacdocker/ai-engine:v13
 ```
 
 ### Deploying AI Engine to Kubernetes
@@ -1105,9 +1119,13 @@ Fetching Prometheus metrics for pod: <pod>
 [METRICS] Pod=<pod> CPU=<value> MEM=<value> RESTARTS_5M=<value> OOMKILLED=<value>
 Fetching logs from Loki for pod: <pod>
 [LOGS] Retrieved <n> log lines
+Running LLM-based RCA
+[LLM RESPONSE] {"root_cause":"...","recommendation":"...","confidence":0.9}
 Deciding remediation action
 [LOG_ANALYSIS] Sample logs: ["...", "...", "..."]
 [DECISION_INPUT] alert=<alert_name> pod=<pod> cpu=<value> memory_bytes=<value> restarts_5m=<value> oomkilled=<value>
+[DECISION] recommendation=<action> source=<llm|rules-fallback|guardrail-override>
+[PROVENANCE] decision_source=<value> recommended_by=<llm|guardrail|rules> guardrail_notes=<text>
 ```
 
 ### Result
@@ -1115,6 +1133,27 @@ Deciding remediation action
 The system now supports automatic alert delivery from Alertmanager to AI engine, evolving the platform from monitoring-only to AI-assisted incident investigation.
 
 Alerts generated in Kubernetes can now automatically initiate AI-based workflows.
+
+### LLM RCA and Guardrail Implementation Summary
+
+This implementation adds LLM-powered RCA and production safety controls to the workflow.
+
+Implemented changes:
+
+- Added `rca_analysis` node in workflow to run LLM RCA using Ollama
+- Added guardrails in decision stage to prevent unsafe/weak LLM recommendations when strong metric evidence exists
+- Added deterministic rule-based fallback path when LLM output is unavailable or invalid
+- Added decision provenance fields in output:
+     - `decision_source`
+     - `recommended_by`
+     - `guardrail_notes`
+- Fixed JSON extraction/parsing reliability in LLM response handling
+- Deployed and verified latest AI engine image: `bacdocker/ai-engine:v13`
+
+Operational validation performed:
+
+- Kubernetes rollout completed successfully for AI engine
+- In-pod connectivity check to Ollama host endpoint passed (`Ollama is running`)
 
 ## 🔁 One-Command Reproducible Setup
 
@@ -1258,8 +1297,8 @@ Routing pattern for AIOps alerts:
 Build and push AI engine container image:
 
 ```bash
-docker build -t bacdocker/ai-engine:v10 ./ai-engine
-docker push bacdocker/ai-engine:v10
+docker build -t bacdocker/ai-engine:v13 ./ai-engine
+docker push bacdocker/ai-engine:v13
 ```
 
 Deploy AI engine manifests:
