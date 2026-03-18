@@ -15,43 +15,55 @@ This project builds an automated incident response system that:
 - Detects anomalies through alerting rules
 - Uses AI to analyze metrics and logs
 - Determines the most appropriate remediation action
-- Executes fixes directly in Kubernetes
-- Generates incident reports for visibility
+- Supports remediation execution through API-driven actions
+- Produces structured RCA output for visibility and auditability
 
 ## 🏗 Architecture
 
 ```text
-                GitHub
-                   │
-                Jenkins
-                   │
-              Docker Build
-                   │
-               Kubernetes
-               (Minikube)
-                   │
-        ┌──────────┼──────────┐
-        │                     │
-   Sample App           AI Engine
-        │                     │
-        │                     │
-    Prometheus ─── Alertmanager
-        │
-      Grafana
-        │
-       Loki
-        │
-        ▼
-     LangGraph Workflow
-        │
-        ▼
-   Root Cause Analysis (LLM)
-        │
-        ▼
-   Remediation Decision
-        │
-        ▼
-  Kubernetes API Execution
+         GitHub
+            │
+            ▼
+         Jenkins
+            │
+            ▼
+          Docker Build
+            │
+            ▼
+        Kubernetes (Minikube)
+         ┌────────┴────────┐
+         │                 │
+         ▼                 ▼
+       Sample App         AI Engine
+         │                 │
+         ├────► Prometheus │
+         ├────► Loki       │
+         │                 │
+         ▼                 ▼
+      Grafana         Alertmanager
+                 │
+                 ▼
+          Dynamic LangGraph Workflow
+                 │
+                 ▼
+             Analyze Alert Context
+                 │
+                 ▼
+               Collect Metrics
+                 │
+                 ▼
+              Precheck + Smart Routing
+              ┌────────┴────────┐
+              │                 │
+              ▼                 ▼
+            Fast path decision    Logs/LLM path
+            (skip optional)      (optional)
+              └────────┬────────┘
+                 ▼
+              Guardrailed Decision
+                 │
+                 ▼
+               Remediation API Action
 ```
 
 ## 🛠 Tech Stack
@@ -502,16 +514,16 @@ The monitoring stack consists of:
 - **Metrics Server** - provides resource metrics for pods and nodes
 
 ```text
-Kubernetes Cluster
-     │
-     ▼
-Prometheus (Metrics Collection)
-     │
-     ▼
-Grafana (Visualization)
-     │
-     ▼
-Dashboards showing CPU, memory, pod status
+        Kubernetes Cluster
+               │
+               ▼
+   Prometheus (Metrics Collection)
+               │
+               ▼
+      Grafana (Visualization)
+               │
+               ▼
+ Dashboards (CPU, memory, pod status)
 ```
 
 ### Installing Prometheus Stack
@@ -678,15 +690,19 @@ The target condition is pod CPU usage above 80%, validating end-to-end anomaly d
 ### Alerting Flow
 
 ```text
-Application Pod
-↓
-Prometheus collects metrics
-↓
-Prometheus evaluates alert rules
-↓
-Alertmanager receives alerts
-↓
-Alert is visible in Alertmanager UI
+         Application Pod
+               │
+               ▼
+    Prometheus Collects Metrics
+               │
+               ▼
+   Prometheus Evaluates Rules
+               │
+               ▼
+    Alertmanager Receives Alert
+               │
+               ▼
+     Alert Visible in UI
 ```
 
 ### Custom Alert Rule
@@ -822,17 +838,40 @@ This enables the platform to move from passive monitoring to AI-driven incident 
 ### Architecture Flow
 
 ```text
-Alertmanager → AI Engine (/alerts)
-                         │
-                         ▼
-                  LangGraph Workflow
-                         │
-         ┌───────────────┼───────────────┐
-         ▼               ▼               ▼
-   Analyze Alert   Collect Metrics   Decide Action
-                         │
-                         ▼
-                 Structured AI Output
+          Alertmanager Webhook
+                 │
+                 ▼
+          AI Engine (/alerts)
+                 │
+                 ▼
+         Dynamic LangGraph Flow
+                 │
+                 ▼
+             Analyze Alert
+                 │
+                 ▼
+            Collect Metrics
+                 │
+                 ▼
+           Pre-decision Check
+            ┌─────┴─────┐
+            │           │
+            ▼           ▼
+       Fast Path   Smart Routing
+        (direct)        │
+                        ▼
+                 Collect Logs?
+                  ┌─────┴─────┐
+                  │           │
+                  ▼           ▼
+               Yes: logs    No: skip
+                  │           │
+                  └─────┬─────┘
+                        ▼
+               LLM RCA (optional)
+                        │
+                        ▼
+           Guardrailed Remediation Decision
 ```
 
 ### AI Engine Microservice
@@ -942,16 +981,16 @@ When an alert is received:
 Example processing flow:
 
 ```text
-Received Alert Payload
-     │
-     ▼
-Extract Alert Name
-     │
-     ▼
-Extract Pod Name
-     │
-     ▼
-Invoke LangGraph Workflow
+        Received Alert Payload
+                 │
+                 ▼
+          Extract Alert Name
+                 │
+                 ▼
+            Extract Pod Name
+                 │
+                 ▼
+        Invoke LangGraph Workflow
 ```
 
 ### LangGraph Workflow
@@ -961,22 +1000,37 @@ The AI engine uses LangGraph to orchestrate alert investigation.
 Workflow stages:
 
 ```text
-Alert Received
-      │
-      ▼
-Analyze Alert Context
-      │
-      ▼
-Collect Metrics (Prometheus API: CPU, memory, restart, OOM)
-      │
-      ▼
-Collect Logs (Loki)
-     │
-     ▼
-Run LLM RCA (Ollama)
-     │
-     ▼
-Decide Remediation Strategy (alert-aware)
+             Alert Received
+                   │
+                   ▼
+          Analyze Alert Context
+                   │
+                   ▼
+     Collect Metrics (CPU/MEM/RESTART/OOM)
+                   │
+                   ▼
+        Pre-decision Check (fast path)
+              ┌─────┴─────┐
+              │           │
+              ▼           ▼
+        Skip logs/LLM    Analysis path
+        (direct decide)   │
+                          ▼
+                    Smart Routing
+                          │
+                          ▼
+                    Collect Logs?
+                   ┌──────┴──────┐
+                   │             │
+                   ▼             ▼
+               Yes: collect    No: skip
+                   │             │
+                   └──────┬──────┘
+                          ▼
+                  Run LLM RCA (optional)
+                          │
+                          ▼
+          Decide Remediation Strategy (guardrailed)
 ```
 
 Prometheus client used by workflow:
@@ -1019,13 +1073,13 @@ The AI engine is packaged as a Docker container for Kubernetes deployment.
 Build image:
 
 ```bash
-docker build -t bacdocker/ai-engine:v13 ./ai-engine
+docker build -t bacdocker/ai-engine:v15 ./ai-engine
 ```
 
 Push image:
 
 ```bash
-docker push bacdocker/ai-engine:v13
+docker push bacdocker/ai-engine:v15
 ```
 
 ### Deploying AI Engine to Kubernetes
@@ -1117,6 +1171,8 @@ Received Alert Payload
 Analyzing alert: HighPodCPUUsage
 Fetching Prometheus metrics for pod: <pod>
 [METRICS] Pod=<pod> CPU=<value> MEM=<value> RESTARTS_5M=<value> OOMKILLED=<value>
+Running pre-decision checks
+Routing after metrics
 Fetching logs from Loki for pod: <pod>
 [LOGS] Retrieved <n> log lines
 Running LLM-based RCA
@@ -1128,27 +1184,32 @@ Deciding remediation action
 [PROVENANCE] decision_source=<value> recommended_by=<llm|guardrail|rules> guardrail_notes=<text>
 ```
 
+Low-signal fast-path output may skip logs/LLM and return a direct recommendation.
+
 ### Result
 
 The system now supports automatic alert delivery from Alertmanager to AI engine, evolving the platform from monitoring-only to AI-assisted incident investigation.
 
 Alerts generated in Kubernetes can now automatically initiate AI-based workflows.
 
-### LLM RCA and Guardrail Implementation Summary
+### Workflow Intelligence and Guardrail Summary
 
-This implementation adds LLM-powered RCA and production safety controls to the workflow.
+The current implementation combines dynamic routing, LLM RCA, and production safety controls.
 
 Implemented changes:
 
-- Added `rca_analysis` node in workflow to run LLM RCA using Ollama
+- Added dynamic execution path using pre-decision checks and conditional routing
+- Added optional `collect_logs` and optional `rca_analysis` execution based on alert signals
+- Added `rca_analysis` node for LLM RCA using Ollama
 - Added guardrails in decision stage to prevent unsafe/weak LLM recommendations when strong metric evidence exists
 - Added deterministic rule-based fallback path when LLM output is unavailable or invalid
 - Added decision provenance fields in output:
      - `decision_source`
      - `recommended_by`
      - `guardrail_notes`
+- Added `reasoning_trace` for explainability (`used_metrics`, `used_logs`, `llm_used`, `guardrails_applied`)
 - Fixed JSON extraction/parsing reliability in LLM response handling
-- Deployed and verified latest AI engine image: `bacdocker/ai-engine:v13`
+- Deployed and verified latest AI engine image: `bacdocker/ai-engine:v15`
 
 Operational validation performed:
 
@@ -1241,6 +1302,19 @@ kubectl get pods -n monitoring | egrep 'loki|promtail'
 kubectl get svc -n monitoring | grep loki
 ```
 
+Optional: access Promtail debug endpoints locally using port-forward:
+
+```bash
+kubectl port-forward -n monitoring daemonset/promtail 3101:3101
+```
+
+Then open:
+
+```text
+http://localhost:3101/targets
+http://localhost:3101/metrics
+```
+
 Optional: verify logs in Grafana Explore (Datasource: Loki).
 
 ### 2) Prometheus Alert Rules Setup
@@ -1297,8 +1371,8 @@ Routing pattern for AIOps alerts:
 Build and push AI engine container image:
 
 ```bash
-docker build -t bacdocker/ai-engine:v13 ./ai-engine
-docker push bacdocker/ai-engine:v13
+docker build -t bacdocker/ai-engine:v15 ./ai-engine
+docker push bacdocker/ai-engine:v15
 ```
 
 Deploy AI engine manifests:
@@ -1333,19 +1407,25 @@ kubectl logs -n default -l app=ai-engine -f
 ### Expected Platform Flow
 
 ```text
-Stress App Issue
-    ↓
-Prometheus Rule Fires
-    ↓
-Alertmanager Routes Alert
-    ↓
-Webhook to AI Engine
-    ↓
-FastAPI receives alert
-    ↓
-LangGraph workflow runs
-    ↓
-Remediation decision
+               Stress App Issue
+                       │
+                       ▼
+           Prometheus Rule Fires
+                       │
+                       ▼
+          Alertmanager Routes Alert
+                       │
+                       ▼
+             Webhook to AI Engine
+                       │
+                       ▼
+            FastAPI Receives Alert
+                       │
+                       ▼
+       LangGraph Runs (dynamic routing)
+                       │
+                       ▼
+       Remediation Decision (guardrailed)
 ```
 
 ## 🧠 AI Engine Concept
@@ -1355,27 +1435,34 @@ The AI engine performs automated incident analysis and remediation.
 Core workflow:
 
 ```text
-Alert Received
-     ↓
-Collect Metrics
-     ↓
-Collect Logs
-     ↓
-LLM Root Cause Analysis
-     ↓
-Remediation Decision
-     ↓
-Execute Kubernetes Action
-     ↓
-Generate Incident Report
+               Alert Received
+                      │
+                      ▼
+                Collect Metrics
+                      │
+                      ▼
+      Pre-decision Check + Smart Routing
+                      │
+                      ▼
+           Collect Logs (optional)
+                      │
+                      ▼
+        LLM Root Cause Analysis (optional)
+                      │
+                      ▼
+             Remediation Decision
+                      │
+                      ▼
+   Remediation API Execution (simulated mode)
 ```
 
-Supported remediation actions:
+Supported remediation recommendations:
 
 - Restart Pod
 - Scale Deployment
-- Rollback Deployment
-- Ignore Alert
+- Increase memory limit and restart pod
+- Investigate and restart pod
+- Monitor / No action / Investigate
 
 ## 📊 Observability Stack
 

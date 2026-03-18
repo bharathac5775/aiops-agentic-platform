@@ -94,6 +94,66 @@ def collect_logs(state):
     return state
 
 
+def pre_decision_check(state):
+    print("Running pre-decision checks")
+
+    alert_name = state.get("alert_name")
+    cpu = state.get("metrics", {}).get("cpu_usage", 0)
+
+    # Fast path: for low CPU signals, skip log/LLM analysis.
+    if alert_name == "HighPodCPUUsage" and 0 < cpu < 0.3:
+        state["skip_llm"] = True
+        state["decision"] = "no action"
+        state["result"] = {
+            "alert_name": alert_name,
+            "pod": state.get("pod", "unknown"),
+            "root_cause": "Low CPU usage",
+            "recommendation": "no action",
+            "confidence": 0.95,
+            "decision_source": "precheck-fast-path",
+            "recommended_by": "rule",
+            "guardrail_notes": ["llm skipped by precheck"],
+            "reasoning_trace": {
+                "used_metrics": True,
+                "used_logs": False,
+                "llm_used": False,
+                "guardrails_applied": ["precheck-fast-path"],
+            },
+            "log_error_count": 0,
+            "log_insights": [],
+            "observed_metrics": state.get("metrics", {}),
+        }
+    else:
+        state["skip_llm"] = False
+
+    return state
+
+
+def route_after_metrics(state):
+    print("Routing after metrics")
+
+    alert_name = state.get("alert_name")
+    cpu = state.get("metrics", {}).get("cpu_usage", 0)
+    memory = state.get("metrics", {}).get("memory_usage_bytes", 0)
+
+    if alert_name in ["PodCrashLoop", "PodOOMKilled"]:
+        return "collect_logs"
+
+    if alert_name == "HighPodCPUUsage" and cpu > 0.7:
+        return "collect_logs"
+
+    if alert_name == "HighMemoryUsage" and memory > 300_000_000:
+        return "collect_logs"
+
+    return "rca_analysis"
+
+
+def route_after_precheck(state):
+    if state.get("skip_llm"):
+        return "decide_action"
+    return route_after_metrics(state)
+
+
 def _extract_llm_json(text: str):
     if not text:
         return {}
@@ -128,6 +188,22 @@ def _clamp_confidence(value):
     return max(0.0, min(1.0, _safe_float(value)))
 
 
+def _normalize_llm_json(payload: dict | None):
+    data = payload if isinstance(payload, dict) else {}
+    if not data:
+        return {}
+
+    # Default missing keys to keep decision pipeline stable.
+    if "root_cause" not in data:
+        data["root_cause"] = "Unknown issue"
+    if "recommendation" not in data:
+        data["recommendation"] = "investigate"
+    if "confidence" not in data:
+        data["confidence"] = 0.7
+
+    return data
+
+
 def rca_analysis(state):
     print("Running LLM-based RCA")
 
@@ -135,35 +211,67 @@ def rca_analysis(state):
     pod = state.get("pod", "unknown")
     metrics = state.get("metrics", {})
     logs = state.get("logs", [])[-10:]
+    # Keep prompt context compact to reduce token overload and response drift.
+    logs = [log[:200] for log in logs]
 
     prompt = f"""
-You are an expert Kubernetes Site Reliability Engineer.
+You are a senior Kubernetes Site Reliability Engineer (SRE).
 
-Task: perform root cause analysis for one Kubernetes alert using metrics and logs.
+Your task is to perform root cause analysis (RCA) using:
+- Alert information
+- Metrics
+- Logs
 
-Input:
-- Alert Name: {alert_name}
-- Pod: {pod}
-- CPU usage cores: {metrics.get('cpu_usage')}
-- Memory usage bytes: {metrics.get('memory_usage_bytes')}
+### Input:
+
+Alert:
+{alert_name}
+
+Pod:
+{pod}
+
+Metrics:
+- CPU cores: {metrics.get('cpu_usage')}
+- Memory bytes: {metrics.get('memory_usage_bytes')}
 - Restart count (5m): {metrics.get('restart_count_5m')}
-- OOMKilled signal: {metrics.get('oomkilled')}
-- Recent logs (latest 10): {logs}
+- OOMKilled: {metrics.get('oomkilled')}
 
-Rules:
-- Be concise and production-safe.
-- If evidence is weak, recommendation should be "investigate".
-- Recommendation must be one of:
-  ["scale deployment", "restart pod", "monitor", "investigate", "increase memory limit and restart pod", "no action"]
-- Confidence must be a float between 0.0 and 1.0.
+Logs (last 10 lines):
+{logs}
 
-Hard constraints:
-- If alert is HighMemoryUsage and memory_usage_bytes > 500000000 with error logs present, avoid "investigate".
-- If alert is HighPodCPUUsage and cpu_usage > 0.85 with timeout logs present, prefer "scale deployment".
-- If alert is PodCrashLoop and restart_count_5m > 3, avoid "no action".
-- If alert is PodOOMKilled and oomkilled >= 1, prefer "increase memory limit and restart pod".
+---
 
-Respond with ONLY valid JSON, no markdown:
+### Instructions:
+
+1. Identify the most likely root cause.
+2. Base reasoning ONLY on provided data.
+3. Do NOT assume missing information.
+4. Be concise and production-safe.
+
+---
+
+### Allowed Recommendations:
+
+- scale deployment
+- restart pod
+- monitor
+- investigate
+- increase memory limit and restart pod
+- no action
+- investigate and restart pod
+
+---
+
+### Output Rules:
+
+- MUST return valid JSON only
+- NO markdown
+- NO explanation outside JSON
+- Confidence must be between 0.0 and 1.0
+
+---
+
+### Output Format:
 {{
   "root_cause": "...",
   "recommendation": "...",
@@ -175,7 +283,11 @@ Respond with ONLY valid JSON, no markdown:
         response = call_llm(prompt)
         print(f"[LLM RESPONSE] {response}")
         state["llm_output"] = response
-        state["llm_json"] = _extract_llm_json(response)
+        llm_json = _extract_llm_json(response)
+        state["llm_json"] = _normalize_llm_json(llm_json)
+
+        if not state["llm_json"]:
+            print("[LLM WARNING] Empty or invalid response")
     except Exception as e:
         print(f"LLM error: {e}")
         state["llm_output"] = ""
@@ -186,6 +298,10 @@ Respond with ONLY valid JSON, no markdown:
 
 def decide_action(state):
     print("Deciding remediation action")
+
+    # Short-circuit when precheck already produced final result.
+    if state.get("skip_llm") and state.get("result"):
+        return state
 
     alert_name = state.get("alert_name", "unknown")
     cpu = state.get("metrics", {}).get("cpu_usage", 0)
@@ -213,6 +329,13 @@ def decide_action(state):
         recommendation = str(llm_json.get("recommendation", "investigate")).strip().lower()
         root_cause = str(llm_json.get("root_cause", "LLM analysis")).strip()
         confidence = _clamp_confidence(llm_json.get("confidence", 0.7))
+
+        # Calibrate model confidence based on observed signal quality.
+        if strong_cpu_timeout_signal or strong_oom_signal:
+            confidence = max(confidence, 0.9)
+        if cpu == 0 and memory == 0:
+            confidence = min(confidence, 0.6)
+
         guardrail_notes = []
 
         if recommendation not in ALLOWED_RECOMMENDATIONS:
@@ -256,6 +379,12 @@ def decide_action(state):
             "decision_source": decision_source,
             "recommended_by": recommended_by,
             "guardrail_notes": guardrail_notes,
+            "reasoning_trace": {
+                "used_metrics": True,
+                "used_logs": len(logs) > 0,
+                "llm_used": bool(llm_json),
+                "guardrails_applied": guardrail_notes,
+            },
             "log_error_count": len(error_logs),
             "log_insights": logs[-5:],
             "observed_metrics": {
@@ -366,6 +495,12 @@ def decide_action(state):
         "confidence": confidence,
         "decision_source": "rule-based-fallback",
         "recommended_by": "rule",
+        "reasoning_trace": {
+            "used_metrics": True,
+            "used_logs": len(logs) > 0,
+            "llm_used": bool(llm_json),
+            "guardrails_applied": [],
+        },
         "log_error_count": len(error_logs),
         "log_insights": logs[-5:],
         "observed_metrics": {
@@ -385,6 +520,7 @@ def build_graph():
 
     graph.add_node("analyze_alert", analyze_alert)
     graph.add_node("collect_metrics", collect_metrics)
+    graph.add_node("pre_decision_check", pre_decision_check)
     graph.add_node("collect_logs", collect_logs)
     graph.add_node("rca_analysis", rca_analysis)
     graph.add_node("decide_action", decide_action)
@@ -392,7 +528,19 @@ def build_graph():
     graph.set_entry_point("analyze_alert")
 
     graph.add_edge("analyze_alert", "collect_metrics")
-    graph.add_edge("collect_metrics", "collect_logs")
+
+    graph.add_edge("collect_metrics", "pre_decision_check")
+
+    graph.add_conditional_edges(
+        "pre_decision_check",
+        route_after_precheck,
+        {
+            "collect_logs": "collect_logs",
+            "rca_analysis": "rca_analysis",
+            "decide_action": "decide_action",
+        },
+    )
+
     graph.add_edge("collect_logs", "rca_analysis")
     graph.add_edge("rca_analysis", "decide_action")
 
