@@ -15,7 +15,7 @@ spec:
       serviceAccountName: ai-engine-sa
       containers:
       - name: ai-engine
-        image: bacdocker/ai-engine:v17
+        image: bacdocker/ai-engine:v19
         ports:
         - containerPort: 8000
         env:
@@ -43,6 +43,11 @@ spec:
           value: "0.93"
         - name: AUTO_MIN_CONFIDENCE_PODOOMKILLED
           value: "0.95"
+        - name: INCIDENT_STORE_DIR
+          value: /data/incidents
+        volumeMounts:
+        - name: incident-history
+          mountPath: /data
         resources:
           requests:
             cpu: "250m"
@@ -50,3 +55,7 @@ spec:
           limits:
             cpu: "1"
             memory: "1Gi"
+      volumes:
+      - name: incident-history
+        persistentVolumeClaim:
+          claimName: ai-engine-incidents-pvc

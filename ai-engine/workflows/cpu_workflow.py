@@ -107,7 +107,7 @@ def pre_decision_check(state):
         state["result"] = {
             "alert_name": alert_name,
             "pod": state.get("pod", "unknown"),
-            "root_cause": "Low CPU usage",
+            "root_cause": "CPU spike recovered before analysis (transient condition)",
             "recommendation": "no action",
             "confidence": 0.95,
             "decision_source": "precheck-fast-path",

@@ -989,6 +989,41 @@ Dry-run example response:
 }
 ```
 
+#### Incident Query Endpoints
+
+`GET /incidents?limit=20`
+
+- Returns recent persisted incidents with lifecycle fields and report artifact path
+
+`GET /incidents/{incident_id}`
+
+- Returns a single incident record by ID
+
+`GET /incidents/remediations?limit=50`
+
+- Returns recent remediation attempt history across incidents
+
+### Incident Report and History Store
+
+Every processed firing alert now generates a persistent report artifact:
+
+- JSON history row (`incidents.jsonl`) with lifecycle, decision, and remediation attempts
+- Markdown report (`reports/<incident_id>.md`) with human-readable incident summary
+
+Stored fields include:
+
+- `incident_id`
+- `correlation_id`
+- `source`
+- timestamps (`created_at`, `completed_at`)
+- decision and analysis payload
+- remediation attempt history (action, mode, reason, outcome)
+
+In Kubernetes, incident history is stored on a mounted PVC through:
+
+- `k8s/ai-engine-incidents-pvc.yaml`
+- `k8s/ai-engine-deployment.yaml` (`INCIDENT_STORE_DIR=/data/incidents`)
+
 ### Alert Processing Logic
 
 When an alert is received:
@@ -1093,13 +1128,13 @@ The AI engine is packaged as a Docker container for Kubernetes deployment.
 Build image:
 
 ```bash
-docker build -t bacdocker/ai-engine:v17 ./ai-engine
+docker build -t bacdocker/ai-engine:v19 ./ai-engine
 ```
 
 Push image:
 
 ```bash
-docker push bacdocker/ai-engine:v17
+docker push bacdocker/ai-engine:v19
 ```
 
 ### Deploying AI Engine to Kubernetes
@@ -1233,7 +1268,8 @@ Implemented changes:
 - Added auto-remediation policy modes for `/alerts`: `off`, `dry-run`, `safe-auto`
 - Added alert-type and confidence-based policy gating before auto action execution
 - Added anti-flapping protection with cooldown and retry-window limits
-- Deployed and verified latest AI engine image: `bacdocker/ai-engine:v17`
+- Updated fast-path RCA wording for transient recovery scenarios (`CPU spike recovered before analysis (transient condition)`)
+- Deployed and verified latest AI engine image: `bacdocker/ai-engine:v19`
 
 ### Auto-Remediation Policy Modes
 
@@ -1405,8 +1441,8 @@ Routing pattern for AIOps alerts:
 Build and push AI engine container image:
 
 ```bash
-docker build -t bacdocker/ai-engine:v17 ./ai-engine
-docker push bacdocker/ai-engine:v17
+docker build -t bacdocker/ai-engine:v19 ./ai-engine
+docker push bacdocker/ai-engine:v19
 ```
 
 Deploy AI engine manifests:

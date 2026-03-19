@@ -2,6 +2,10 @@ from fastapi import FastAPI, Request
 from datetime import datetime, timezone
 import os
 import time
+import json
+import uuid
+import hashlib
+from pathlib import Path
 from kubernetes import client, config
 from kubernetes.client.exceptions import ApiException
 from workflows.cpu_workflow import build_graph
@@ -33,9 +37,151 @@ AUTO_REMEDIATION_MODE = os.getenv("AUTO_REMEDIATION_MODE", "off").strip().lower(
 AUTO_REMEDIATE_COOLDOWN_SECONDS = int(os.getenv("AUTO_REMEDIATE_COOLDOWN_SECONDS", "300"))
 AUTO_REMEDIATE_RETRY_WINDOW_SECONDS = int(os.getenv("AUTO_REMEDIATE_RETRY_WINDOW_SECONDS", "1800"))
 AUTO_REMEDIATE_RETRY_LIMIT = int(os.getenv("AUTO_REMEDIATE_RETRY_LIMIT", "3"))
+INCIDENT_STORE_DIR = Path(os.getenv("INCIDENT_STORE_DIR", "/tmp/ai-engine/incidents"))
+INCIDENT_HISTORY_FILE = INCIDENT_STORE_DIR / "incidents.jsonl"
+INCIDENT_REPORTS_DIR = INCIDENT_STORE_DIR / "reports"
 
 _last_auto_action_ts = {}
 _auto_action_attempts = {}
+
+
+def _utc_now_iso():
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _ensure_incident_store():
+    INCIDENT_STORE_DIR.mkdir(parents=True, exist_ok=True)
+    INCIDENT_REPORTS_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def _safe_json_dumps(payload):
+    return json.dumps(payload, ensure_ascii=True, sort_keys=False)
+
+
+def _build_correlation_id(alert: dict, default_namespace: str = "default"):
+    labels = alert.get("labels") or {}
+    fingerprint_source = {
+        "alertname": labels.get("alertname", "unknown"),
+        "pod": labels.get("pod", "unknown"),
+        "namespace": labels.get("namespace", default_namespace),
+        "startsAt": alert.get("startsAt", ""),
+        "generatorURL": alert.get("generatorURL", ""),
+    }
+    digest = hashlib.sha1(_safe_json_dumps(fingerprint_source).encode("utf-8")).hexdigest()[:16]
+    return f"corr-{digest}"
+
+
+def _incident_markdown(report: dict):
+    remediation_lines = []
+    for attempt in report.get("remediation_attempts", []):
+        remediation_lines.append(
+            "| {timestamp} | {source} | {action} | {outcome} | {mode} | {reason} |".format(
+                timestamp=attempt.get("timestamp", ""),
+                source=attempt.get("source", ""),
+                action=attempt.get("action", ""),
+                outcome=attempt.get("outcome", ""),
+                mode=attempt.get("mode", ""),
+                reason=attempt.get("reason", ""),
+            )
+        )
+
+    remediation_table = "\n".join(remediation_lines) if remediation_lines else "| - | - | - | - | - | - |"
+    analysis = report.get("analysis") or {}
+    observed = analysis.get("observed_metrics") or {}
+
+    return (
+        f"# Incident Report: {report.get('incident_id')}\n\n"
+        f"- Correlation ID: {report.get('correlation_id')}\n"
+        f"- Source: {report.get('source')}\n"
+        f"- Status: {report.get('status')}\n"
+        f"- Alert: {report.get('alert_name')}\n"
+        f"- Namespace: {report.get('namespace')}\n"
+        f"- Pod: {report.get('pod')}\n"
+        f"- Created At: {report.get('created_at')}\n"
+        f"- Completed At: {report.get('completed_at')}\n\n"
+        "## Analysis\n\n"
+        f"- Root Cause: {analysis.get('root_cause', 'n/a')}\n"
+        f"- Recommendation: {analysis.get('recommendation', 'n/a')}\n"
+        f"- Confidence: {analysis.get('confidence', 'n/a')}\n"
+        f"- Decision Source: {analysis.get('decision_source', 'n/a')}\n\n"
+        "## Observed Metrics\n\n"
+        f"- CPU Usage: {observed.get('cpu_usage', 'n/a')}\n"
+        f"- Memory Bytes: {observed.get('memory_usage_bytes', 'n/a')}\n"
+        f"- Restarts (5m): {observed.get('restart_count_5m', 'n/a')}\n"
+        f"- OOMKilled: {observed.get('oomkilled', 'n/a')}\n\n"
+        "## Remediation Attempts\n\n"
+        "| Timestamp | Source | Action | Outcome | Mode | Reason |\n"
+        "|---|---|---|---|---|---|\n"
+        f"{remediation_table}\n"
+    )
+
+
+def _persist_incident(report: dict):
+    _ensure_incident_store()
+
+    md_path = INCIDENT_REPORTS_DIR / f"{report['incident_id']}.md"
+    report["report_markdown_path"] = str(md_path)
+
+    with INCIDENT_HISTORY_FILE.open("a", encoding="utf-8") as fh:
+        fh.write(_safe_json_dumps(report) + "\n")
+
+    md_path.write_text(_incident_markdown(report), encoding="utf-8")
+    return report
+
+
+def _load_recent_incidents(limit: int = 20):
+    _ensure_incident_store()
+    if not INCIDENT_HISTORY_FILE.exists():
+        return []
+
+    rows = []
+    with INCIDENT_HISTORY_FILE.open("r", encoding="utf-8") as fh:
+        for line in fh:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                rows.append(json.loads(line))
+            except Exception:
+                continue
+
+    return list(reversed(rows[-max(1, min(limit, 200)):]))
+
+
+def _load_incident_by_id(incident_id: str):
+    _ensure_incident_store()
+    if not INCIDENT_HISTORY_FILE.exists():
+        return None
+
+    found = None
+    with INCIDENT_HISTORY_FILE.open("r", encoding="utf-8") as fh:
+        for line in fh:
+            try:
+                row = json.loads(line)
+            except Exception:
+                continue
+            if row.get("incident_id") == incident_id:
+                found = row
+    return found
+
+
+def _extract_remediation_history(limit: int = 50):
+    incidents = _load_recent_incidents(limit=200)
+    attempts = []
+    for incident in incidents:
+        for attempt in incident.get("remediation_attempts", []):
+            attempts.append(
+                {
+                    "incident_id": incident.get("incident_id"),
+                    "correlation_id": incident.get("correlation_id"),
+                    "alert_name": incident.get("alert_name"),
+                    "namespace": incident.get("namespace"),
+                    "pod": incident.get("pod"),
+                    **attempt,
+                }
+            )
+
+    return attempts[-max(1, min(limit, 500)):][::-1]
 
 
 def _env_float(name: str, default: float):
@@ -388,6 +534,32 @@ def health():
     return {"status": "AI Engine running"}
 
 
+@app.get("/incidents")
+def list_incidents(limit: int = 20):
+    incidents = _load_recent_incidents(limit=limit)
+    return {
+        "incidents": incidents,
+        "count": len(incidents),
+    }
+
+
+@app.get("/incidents/remediations")
+def list_remediation_history(limit: int = 50):
+    history = _extract_remediation_history(limit=limit)
+    return {
+        "remediation_history": history,
+        "count": len(history),
+    }
+
+
+@app.get("/incidents/{incident_id}")
+def get_incident(incident_id: str):
+    incident = _load_incident_by_id(incident_id)
+    if not incident:
+        return {"error": "Incident not found", "incident_id": incident_id}
+    return incident
+
+
 @app.post("/alerts")
 async def receive_alert(request: Request):
 
@@ -414,6 +586,10 @@ async def receive_alert(request: Request):
         labels = alert.get("labels") or {}
         alert_name = labels.get("alertname", "unknown")
         pod_name = labels.get("pod", "unknown")
+        namespace = labels.get("namespace") or "default"
+        incident_id = f"inc-{uuid.uuid4().hex[:12]}"
+        correlation_id = _build_correlation_id(alert, default_namespace=namespace)
+        remediation_attempts = []
 
         if status != "firing":
             log("IGNORED", f"{alert_name} on pod {pod_name} (status={status})")
@@ -421,6 +597,7 @@ async def receive_alert(request: Request):
             continue
 
         log("PROCESSING", f"{alert_name} on pod {pod_name}")
+        incident_started_at = _utc_now_iso()
 
         try:
             state = workflow.invoke({
@@ -434,7 +611,7 @@ async def receive_alert(request: Request):
             decision = _evaluate_auto_policy(
                 alert_name=alert_name,
                 pod=result.get("pod") or pod_name,
-                namespace=(labels.get("namespace") or "default"),
+                namespace=namespace,
                 recommendation=result.get("recommendation"),
                 confidence=result.get("confidence", 0),
             )
@@ -443,16 +620,38 @@ async def receive_alert(request: Request):
                 remediation_response = _execute_remediation(
                     action=result.get("recommendation"),
                     pod=result.get("pod") or pod_name,
-                    namespace=(labels.get("namespace") or "default"),
+                    namespace=namespace,
                     deployment=result.get("deployment"),
                     replicas=result.get("target_replicas"),
                     dry_run=not decision["execute_real"],
+                )
+                remediation_attempts.append(
+                    {
+                        "timestamp": _utc_now_iso(),
+                        "source": "auto-policy",
+                        "action": result.get("recommendation"),
+                        "mode": decision["mode"],
+                        "reason": decision["reason"],
+                        "outcome": remediation_response.get("status", "unknown"),
+                        "response": remediation_response,
+                    }
                 )
                 log(
                     "REMEDIATE",
                     f"mode={decision['mode']} decision={decision['reason']} response={remediation_response}",
                 )
             else:
+                remediation_attempts.append(
+                    {
+                        "timestamp": _utc_now_iso(),
+                        "source": "auto-policy",
+                        "action": decision.get("action"),
+                        "mode": decision["mode"],
+                        "reason": decision["reason"],
+                        "outcome": "skipped",
+                        "response": decision,
+                    }
+                )
                 log(
                     "REMEDIATE",
                     (
@@ -460,6 +659,29 @@ async def receive_alert(request: Request):
                         f"reason={decision['reason']}"
                     ),
                 )
+
+            incident_report = {
+                "incident_id": incident_id,
+                "correlation_id": correlation_id,
+                "source": "alertmanager-webhook",
+                "status": "processed",
+                "alert_status": status,
+                "alert_name": alert_name,
+                "namespace": namespace,
+                "pod": result.get("pod") or pod_name,
+                "created_at": incident_started_at,
+                "completed_at": _utc_now_iso(),
+                "analysis": result,
+                "decision": decision,
+                "alert": {
+                    "labels": labels,
+                    "startsAt": alert.get("startsAt"),
+                    "endsAt": alert.get("endsAt"),
+                    "fingerprint": alert.get("fingerprint"),
+                },
+                "remediation_attempts": remediation_attempts,
+            }
+            _persist_incident(incident_report)
 
             processed += 1
 
@@ -514,6 +736,7 @@ async def remediate(request: Request):
     deployment = data.get("deployment")
     replicas = data.get("replicas")
     dry_run = bool(data.get("dry_run", False))
+    incident_started_at = _utc_now_iso()
 
     log("REMEDIATE", f"requested action={decision} pod={pod} namespace={namespace} deployment={deployment} dry_run={dry_run}")
 
@@ -525,5 +748,51 @@ async def remediate(request: Request):
         replicas=replicas,
         dry_run=dry_run,
     )
+
+    incident_report = {
+        "incident_id": f"inc-{uuid.uuid4().hex[:12]}",
+        "correlation_id": data.get("correlation_id") or f"corr-{uuid.uuid4().hex[:10]}",
+        "source": "manual-remediation-api",
+        "status": "processed",
+        "alert_status": "manual",
+        "alert_name": data.get("alert_name") or "manual-remediation",
+        "namespace": namespace,
+        "pod": pod,
+        "created_at": incident_started_at,
+        "completed_at": _utc_now_iso(),
+        "analysis": {
+            "root_cause": data.get("root_cause") or "manual invocation",
+            "recommendation": decision,
+            "confidence": data.get("confidence") or "manual",
+            "decision_source": "manual",
+        },
+        "decision": {
+            "run": True,
+            "mode": "manual",
+            "execute_real": not dry_run,
+            "reason": "manual-remediation-endpoint",
+            "action": _normalize_action(decision),
+        },
+        "alert": {
+            "labels": {
+                "namespace": namespace,
+                "pod": pod,
+            }
+        },
+        "remediation_attempts": [
+            {
+                "timestamp": _utc_now_iso(),
+                "source": "manual-remediation-api",
+                "action": decision,
+                "mode": "manual",
+                "reason": "manual-remediation-endpoint",
+                "outcome": response.get("status", "unknown"),
+                "response": response,
+            }
+        ],
+    }
+    saved_report = _persist_incident(incident_report)
+    response["incident_id"] = saved_report["incident_id"]
+    response["correlation_id"] = saved_report["correlation_id"]
 
     return response
