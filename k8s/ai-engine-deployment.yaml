@@ -12,14 +12,37 @@ spec:
       labels:
         app: ai-engine
     spec:
+      serviceAccountName: ai-engine-sa
       containers:
       - name: ai-engine
-        image: bacdocker/ai-engine:v15
+        image: bacdocker/ai-engine:v17
         ports:
         - containerPort: 8000
         env:
         - name: OLLAMA_MODEL
           value: llama3.1:8b
+        - name: REMEDIATION_ALLOWED_NAMESPACES
+          value: default
+        - name: AUTO_REMEDIATE
+          value: "false"
+        - name: AUTO_REMEDIATION_MODE
+          value: "off"
+        - name: AUTO_REMEDIATE_COOLDOWN_SECONDS
+          value: "300"
+        - name: AUTO_REMEDIATE_RETRY_WINDOW_SECONDS
+          value: "1800"
+        - name: AUTO_REMEDIATE_RETRY_LIMIT
+          value: "3"
+        - name: AUTO_MIN_CONFIDENCE_DEFAULT
+          value: "0.85"
+        - name: AUTO_MIN_CONFIDENCE_HIGHPODCPUUSAGE
+          value: "0.90"
+        - name: AUTO_MIN_CONFIDENCE_PODCRASHLOOP
+          value: "0.90"
+        - name: AUTO_MIN_CONFIDENCE_HIGHMEMORYUSAGE
+          value: "0.93"
+        - name: AUTO_MIN_CONFIDENCE_PODOOMKILLED
+          value: "0.95"
         resources:
           requests:
             cpu: "250m"
