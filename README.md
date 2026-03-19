@@ -21,49 +21,51 @@ This project builds an automated incident response system that:
 ## 🏗 Architecture
 
 ```text
-         GitHub
-            │
-            ▼
-         Jenkins
-            │
-            ▼
-          Docker Build
-            │
-            ▼
-        Kubernetes (Minikube)
-         ┌────────┴────────┐
-         │                 │
-         ▼                 ▼
-       Sample App         AI Engine
-         │                 │
-         ├────► Prometheus │
-         ├────► Loki       │
-         │                 │
-         ▼                 ▼
-      Grafana         Alertmanager
-                 │
-                 ▼
-          Dynamic LangGraph Workflow
-                 │
-                 ▼
-             Analyze Alert Context
-                 │
-                 ▼
-               Collect Metrics
-                 │
-                 ▼
-              Precheck + Smart Routing
-              ┌────────┴────────┐
-              │                 │
-              ▼                 ▼
-            Fast path decision    Logs/LLM path
-            (skip optional)      (optional)
-              └────────┬────────┘
-                 ▼
+                 GitHub
+                   │
+                   ▼
+                 Jenkins
+                   │
+                   ▼
+                Docker Build
+                   │
+                   ▼
+            Kubernetes (Minikube)
+              ┌─────────┴─────────┐
+              │                   │
+              ▼                   ▼
+            Sample App          AI Engine
+              │                   │
+       ┌──────────┼──────────┐        │
+       │          │          │        ▼
+       ▼          ▼          ▼   Alertmanager
+    Prometheus    Loki      Grafana      │
+       │                        ▲        ▼
+       └────────────────────────┴────────┘
+              Observability Signals
+                   │
+                   ▼
+            Dynamic LangGraph Workflow
+                   │
+                   ▼
+              Analyze Alert Context
+                   │
+                   ▼
+                Collect Metrics
+                   │
+                   ▼
+            Precheck + Smart Routing
+              ┌─────────┴─────────┐
+              │                   │
+              ▼                   ▼
+          Fast Path Decision   Logs/LLM Path
+          (skip optional)        (optional)
+              └─────────┬─────────┘
+                     ▼
               Guardrailed Decision
-                 │
-                 ▼
-               Remediation API Action
+                     │
+                     ▼
+              Remediation API Action
 ```
 
 ## 🛠 Tech Stack
@@ -958,7 +960,14 @@ Example response:
 `POST /remediate`
 
 - Accepts remediation decision input
-- Simulates remediation execution
+- Executes remediation with Kubernetes safety guardrails
+
+Supported actions:
+
+- `restart pod`
+- `scale deployment`
+- `increase memory limit and restart pod` (safe partial behavior: restart executed, limit patch deferred)
+- `rollback deployment` (currently blocked and deferred)
 
 Example response:
 
@@ -966,6 +975,17 @@ Example response:
 {
      "status": "executed",
      "action": "scale deployment"
+}
+```
+
+Dry-run example response:
+
+```json
+{
+  "status": "dry-run",
+  "action": "restart pod",
+  "namespace": "default",
+  "pod": "stress-app-xxxx"
 }
 ```
 
@@ -1073,13 +1093,13 @@ The AI engine is packaged as a Docker container for Kubernetes deployment.
 Build image:
 
 ```bash
-docker build -t bacdocker/ai-engine:v15 ./ai-engine
+docker build -t bacdocker/ai-engine:v17 ./ai-engine
 ```
 
 Push image:
 
 ```bash
-docker push bacdocker/ai-engine:v15
+docker push bacdocker/ai-engine:v17
 ```
 
 ### Deploying AI Engine to Kubernetes
@@ -1209,7 +1229,21 @@ Implemented changes:
      - `guardrail_notes`
 - Added `reasoning_trace` for explainability (`used_metrics`, `used_logs`, `llm_used`, `guardrails_applied`)
 - Fixed JSON extraction/parsing reliability in LLM response handling
-- Deployed and verified latest AI engine image: `bacdocker/ai-engine:v15`
+- Added Kubernetes remediation execution in `/remediate` with namespace and action allowlists
+- Added auto-remediation policy modes for `/alerts`: `off`, `dry-run`, `safe-auto`
+- Added alert-type and confidence-based policy gating before auto action execution
+- Added anti-flapping protection with cooldown and retry-window limits
+- Deployed and verified latest AI engine image: `bacdocker/ai-engine:v17`
+
+### Auto-Remediation Policy Modes
+
+`AUTO_REMEDIATION_MODE` controls automatic execution behavior for alerts received on `POST /alerts`:
+
+- `off`: recommendation-only mode, no auto execution
+- `dry-run`: policy and action path execute, but Kubernetes mutations are not applied
+- `safe-auto`: executes only policy-approved actions after confidence, cooldown, and retry checks
+
+If `AUTO_REMEDIATION_MODE` is missing or invalid, the service falls back to legacy `AUTO_REMEDIATE` compatibility.
 
 Operational validation performed:
 
@@ -1371,8 +1405,8 @@ Routing pattern for AIOps alerts:
 Build and push AI engine container image:
 
 ```bash
-docker build -t bacdocker/ai-engine:v15 ./ai-engine
-docker push bacdocker/ai-engine:v15
+docker build -t bacdocker/ai-engine:v17 ./ai-engine
+docker push bacdocker/ai-engine:v17
 ```
 
 Deploy AI engine manifests:
@@ -1453,7 +1487,7 @@ Core workflow:
              Remediation Decision
                       │
                       ▼
-   Remediation API Execution (simulated mode)
+      Remediation API Execution (guardrailed execution mode)
 ```
 
 Supported remediation recommendations:
