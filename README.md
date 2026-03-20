@@ -35,7 +35,7 @@ This project builds an automated incident response system that:
               │                   │
               ▼                   ▼
             Sample App          AI Engine
-              │                   │
+              │                       │
        ┌──────────┼──────────┐        │
        │          │          │        ▼
        ▼          ▼          ▼   Alertmanager
@@ -61,10 +61,10 @@ This project builds an automated incident response system that:
           Fast Path Decision   Logs/LLM Path
           (skip optional)        (optional)
               └─────────┬─────────┘
-                     ▼
+                        ▼
               Guardrailed Decision
-                     │
-                     ▼
+                        │
+                        ▼
               Remediation API Action
 ```
 
@@ -1024,6 +1024,113 @@ In Kubernetes, incident history is stored on a mounted PVC through:
 - `k8s/ai-engine-incidents-pvc.yaml`
 - `k8s/ai-engine-deployment.yaml` (`INCIDENT_STORE_DIR=/data/incidents`)
 
+### RAG Memory Foundation
+
+Retrieval-Augmented Generation (RAG) improves RCA consistency using prior incident memory.
+
+Implementation modules:
+
+- Adapter interface: `ai-engine/tools/rag/base.py`
+- Active backend: `ai-engine/tools/rag/chroma_store.py`
+- Backend resolver/facade: `ai-engine/tools/rag/service.py`
+
+RAG flow:
+
+```text
+Alert + Metrics + Logs
+    │
+    ▼
+   Build Similarity Query
+    │
+    ▼
+ Retrieve Top-K Incidents
+    │
+    ▼
+ Augment RCA Prompt Context
+    │
+    ▼
+  LLM JSON Generation
+    │
+    ▼
+ Guardrails + Policy Check
+    │
+    ▼
+ Persist Incident + Memory
+```
+
+#### Retrieval (R)
+
+Retrieval runs inside workflow RCA before the LLM call.
+
+How retrieval is implemented:
+
+- A similarity query is built from current alert context:
+  - `alert_name`
+  - `pod`
+  - observed metrics (`cpu_usage`, `memory_usage_bytes`, `restart_count_5m`, `oomkilled`)
+  - recent log snippets
+- The query is sent to incident memory store as top-k search (`limit=3`).
+- Returned items contain:
+  - metadata (`incident_id`, `alert_name`, `namespace`, `pod`, `recommendation`, `root_cause`)
+  - stored incident document text
+  - similarity distance
+
+Code path:
+
+- Workflow retrieval call: `ai-engine/workflows/cpu_workflow.py`
+- Backend search implementation: `ai-engine/tools/rag/chroma_store.py`
+
+#### Augmentation (A)
+
+Augmentation injects retrieved incident summaries into the RCA prompt context.
+
+How augmentation is implemented:
+
+- Retrieved incidents are normalized into compact context lines.
+- Context is inserted in prompt section:
+  - `Similar incidents from memory (for context, do not copy blindly)`
+- Prompt instruction enforces safe usage:
+  - use similar incidents only as weak prior context
+  - rely on current metrics/logs as primary evidence
+
+This keeps RAG helpful without blindly repeating previous actions.
+
+#### Generation (G)
+
+Generation remains LLM RCA, but now conditioned on both current signals and retrieved context.
+
+How generation is implemented:
+
+- LLM produces JSON output (`root_cause`, `recommendation`, `confidence`).
+- Existing guardrails/policy still apply after generation:
+  - recommendation normalization
+  - alert-specific safety checks
+  - confidence checks
+  - auto-remediation policy gating
+
+RAG does not bypass safety controls; it improves context quality before decisioning.
+
+#### Memory Write-back
+
+Write-back persists each processed incident to vector memory after incident persistence.
+
+Write-back triggers:
+
+- `POST /alerts` flow
+- `POST /remediate` flow
+
+Each stored memory document includes incident identity, alert context, root cause, recommendation, confidence, and observed metrics.
+
+#### Runtime Configuration
+
+Runtime controls for backend selection:
+
+- `INCIDENT_MEMORY_BACKEND=chroma`
+- `INCIDENT_MEMORY_PATH=/data/incidents/chroma`
+- `INCIDENT_MEMORY_COLLECTION=incident_memory` (optional)
+
+Default deployment persists vector memory under the existing incident PVC mount (`/data/incidents/chroma`).
+
 ### Alert Processing Logic
 
 When an alert is received:
@@ -1128,13 +1235,13 @@ The AI engine is packaged as a Docker container for Kubernetes deployment.
 Build image:
 
 ```bash
-docker build -t bacdocker/ai-engine:v19 ./ai-engine
+docker build -t bacdocker/ai-engine:v20 ./ai-engine
 ```
 
 Push image:
 
 ```bash
-docker push bacdocker/ai-engine:v19
+docker push bacdocker/ai-engine:v20
 ```
 
 ### Deploying AI Engine to Kubernetes
@@ -1269,7 +1376,10 @@ Implemented changes:
 - Added alert-type and confidence-based policy gating before auto action execution
 - Added anti-flapping protection with cooldown and retry-window limits
 - Updated fast-path RCA wording for transient recovery scenarios (`CPU spike recovered before analysis (transient condition)`)
-- Deployed and verified latest AI engine image: `bacdocker/ai-engine:v19`
+- Added adapter-based incident memory (RAG foundation) with Chroma backend and pluggable backend resolver
+- Added similar-incident retrieval context injection into RCA prompt for better decision consistency
+- Added post-decision memory write-back after incident persistence in both alert and manual remediation paths
+- Deployed and verified latest AI engine image: `bacdocker/ai-engine:v20`
 
 ### Auto-Remediation Policy Modes
 
@@ -1425,7 +1535,12 @@ Configuration file:
 Apply configuration:
 
 ```bash
-kubectl apply -f k8s/alertmanager/alertmanager.yaml
+kubectl create secret generic alertmanager-monitoring-kube-prometheus-alertmanager \
+  --from-file=alertmanager.yaml=k8s/alertmanager/alertmanager.yaml \
+  -n monitoring \
+  --dry-run=client -o yaml | kubectl apply -f -
+
+kubectl rollout restart statefulset alertmanager-monitoring-kube-prometheus-alertmanager -n monitoring
 ```
 
 Required webhook endpoint:
@@ -1441,8 +1556,8 @@ Routing pattern for AIOps alerts:
 Build and push AI engine container image:
 
 ```bash
-docker build -t bacdocker/ai-engine:v19 ./ai-engine
-docker push bacdocker/ai-engine:v19
+docker build -t bacdocker/ai-engine:v20 ./ai-engine
+docker push bacdocker/ai-engine:v20
 ```
 
 Deploy AI engine manifests:

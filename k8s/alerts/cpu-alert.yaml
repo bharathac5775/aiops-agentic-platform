@@ -30,7 +30,7 @@ spec:
         description: "Pod memory usage above threshold"
 
     - alert: PodCrashLoop
-      expr: increase(kube_pod_container_status_restarts_total[5m]) > 3
+      expr: increase(kube_pod_container_status_restarts_total{namespace="default"}[5m]) > 3
       for: 30s
       labels:
         severity: critical
@@ -39,7 +39,7 @@ spec:
         description: "Container restarting repeatedly"
 
     - alert: PodOOMKilled
-      expr: kube_pod_container_status_last_terminated_reason{reason="OOMKilled"} == 1
+      expr: kube_pod_container_status_last_terminated_reason{namespace="default",reason="OOMKilled"} == 1
       for: 30s
       labels:
         severity: critical

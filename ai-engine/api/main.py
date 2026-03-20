@@ -9,6 +9,7 @@ from pathlib import Path
 from kubernetes import client, config
 from kubernetes.client.exceptions import ApiException
 from workflows.cpu_workflow import build_graph
+from tools.rag import incident_memory_store
 
 workflow = build_graph()
 
@@ -30,7 +31,7 @@ SAFE_AUTO_ACTIONS = {
 }
 
 ALLOWED_NAMESPACES = {
-    ns.strip() for ns in os.getenv("REMEDIATION_ALLOWED_NAMESPACES", "default").split(",") if ns.strip()
+    ns.strip() for ns in os.getenv("REMEDIATION_ALLOWED_NAMESPACES", "default,monitoring").split(",") if ns.strip()
 }
 AUTO_REMEDIATE = os.getenv("AUTO_REMEDIATE", "false").lower() == "true"
 AUTO_REMEDIATION_MODE = os.getenv("AUTO_REMEDIATION_MODE", "off").strip().lower()
@@ -127,6 +128,13 @@ def _persist_incident(report: dict):
 
     md_path.write_text(_incident_markdown(report), encoding="utf-8")
     return report
+
+
+def _store_incident_memory(report: dict):
+    try:
+        incident_memory_store.store_incident(report)
+    except Exception as error:
+        log("RAG", f"memory write failed: {error}")
 
 
 def _load_recent_incidents(limit: int = 20):
@@ -395,6 +403,10 @@ def _infer_deployment_from_pod(pod_name: str | None):
     return None
 
 
+def _namespace_allowed(namespace: str) -> bool:
+    return namespace in ALLOWED_NAMESPACES
+
+
 def _execute_remediation(action: str, pod: str | None, namespace: str, deployment: str | None = None, replicas: int | None = None, dry_run: bool = False):
     normalized_action = _normalize_action(action)
     if normalized_action not in ALLOWED_ACTIONS:
@@ -404,7 +416,7 @@ def _execute_remediation(action: str, pod: str | None, namespace: str, deploymen
             "action": normalized_action,
         }
 
-    if namespace not in ALLOWED_NAMESPACES:
+    if not _namespace_allowed(namespace):
         return {
             "status": "blocked",
             "reason": f"Namespace '{namespace}' is not allowed",
@@ -681,7 +693,8 @@ async def receive_alert(request: Request):
                 },
                 "remediation_attempts": remediation_attempts,
             }
-            _persist_incident(incident_report)
+            saved_report = _persist_incident(incident_report)
+            _store_incident_memory(saved_report)
 
             processed += 1
 
@@ -792,6 +805,7 @@ async def remediate(request: Request):
         ],
     }
     saved_report = _persist_incident(incident_report)
+    _store_incident_memory(saved_report)
     response["incident_id"] = saved_report["incident_id"]
     response["correlation_id"] = saved_report["correlation_id"]
 

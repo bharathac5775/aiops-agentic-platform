@@ -37,6 +37,9 @@ route:
     - alertname =~ "HighPodCPUUsage|HighMemoryUsage|PodCrashLoop|PodOOMKilled"
     receiver: ai-engine
   - matchers:
+    - alertname = "LokiPodHighMemory"
+    receiver: "null"
+  - matchers:
     - alertname = "Watchdog"
     receiver: "null"
 

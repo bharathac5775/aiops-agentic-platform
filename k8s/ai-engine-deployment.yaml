@@ -15,14 +15,14 @@ spec:
       serviceAccountName: ai-engine-sa
       containers:
       - name: ai-engine
-        image: bacdocker/ai-engine:v19
+        image: bacdocker/ai-engine:v20
         ports:
         - containerPort: 8000
         env:
         - name: OLLAMA_MODEL
           value: llama3.1:8b
         - name: REMEDIATION_ALLOWED_NAMESPACES
-          value: default
+          value: default,monitoring
         - name: AUTO_REMEDIATE
           value: "false"
         - name: AUTO_REMEDIATION_MODE
@@ -45,6 +45,10 @@ spec:
           value: "0.95"
         - name: INCIDENT_STORE_DIR
           value: /data/incidents
+        - name: INCIDENT_MEMORY_BACKEND
+          value: chroma
+        - name: INCIDENT_MEMORY_PATH
+          value: /data/incidents/chroma
         volumeMounts:
         - name: incident-history
           mountPath: /data

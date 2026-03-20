@@ -9,6 +9,7 @@ from tools.prometheus_client import (
 )
 from tools.loki_client import get_pod_logs
 from tools.llm_client import call_llm
+from tools.rag import incident_memory_store
 
 ALLOWED_RECOMMENDATIONS = {
     "scale deployment",
@@ -122,6 +123,7 @@ def pre_decision_check(state):
             "log_error_count": 0,
             "log_insights": [],
             "observed_metrics": state.get("metrics", {}),
+            "similar_incidents": [],
         }
     else:
         state["skip_llm"] = False
@@ -204,6 +206,41 @@ def _normalize_llm_json(payload: dict | None):
     return data
 
 
+def _build_similarity_query(alert_name: str, pod: str, metrics: dict, logs: list[str]) -> str:
+    return (
+        f"alert_name={alert_name}; "
+        f"pod={pod}; "
+        f"cpu={metrics.get('cpu_usage')}; "
+        f"memory={metrics.get('memory_usage_bytes')}; "
+        f"restarts={metrics.get('restart_count_5m')}; "
+        f"oomkilled={metrics.get('oomkilled')}; "
+        f"logs={' | '.join(logs[-3:])}"
+    )
+
+
+def _format_similar_incidents_context(items: list[dict]) -> str:
+    if not items:
+        return "None"
+
+    lines = []
+    for index, item in enumerate(items, start=1):
+        metadata = item.get("metadata") or {}
+        distance = item.get("distance")
+        document = str(item.get("document") or "")
+        truncated_doc = document[:400]
+        lines.append(
+            (
+                f"{index}. incident_id={metadata.get('incident_id', 'unknown')} "
+                f"alert={metadata.get('alert_name', 'unknown')} "
+                f"recommendation={metadata.get('recommendation', 'unknown')} "
+                f"distance={distance}\n"
+                f"{truncated_doc}"
+            )
+        )
+
+    return "\n\n".join(lines)
+
+
 def rca_analysis(state):
     print("Running LLM-based RCA")
 
@@ -213,6 +250,17 @@ def rca_analysis(state):
     logs = state.get("logs", [])[-10:]
     # Keep prompt context compact to reduce token overload and response drift.
     logs = [log[:200] for log in logs]
+
+    similar_incidents = []
+    try:
+        similarity_query = _build_similarity_query(alert_name, pod, metrics, logs)
+        similar_incidents = incident_memory_store.search_similar(similarity_query, limit=3)
+    except Exception as error:
+        print(f"[RAG] Similarity search failed: {error}")
+        similar_incidents = []
+
+    state["similar_incidents"] = similar_incidents
+    similar_context = _format_similar_incidents_context(similar_incidents)
 
     prompt = f"""
 You are a senior Kubernetes Site Reliability Engineer (SRE).
@@ -239,6 +287,9 @@ Metrics:
 Logs (last 10 lines):
 {logs}
 
+Similar incidents from memory (for context, do not copy blindly):
+{similar_context}
+
 ---
 
 ### Instructions:
@@ -247,6 +298,7 @@ Logs (last 10 lines):
 2. Base reasoning ONLY on provided data.
 3. Do NOT assume missing information.
 4. Be concise and production-safe.
+5. Use similar incidents as weak prior context only when they align with current metrics/logs.
 
 ---
 
@@ -393,6 +445,7 @@ def decide_action(state):
                 "restart_count_5m": restarts,
                 "oomkilled": oomkilled,
             },
+            "similar_incidents": state.get("similar_incidents", []),
             "llm_output": state.get("llm_output", ""),
         }
         return state
@@ -509,6 +562,7 @@ def decide_action(state):
             "restart_count_5m": restarts,
             "oomkilled": oomkilled,
         },
+        "similar_incidents": state.get("similar_incidents", []),
     }
 
     return state
