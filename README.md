@@ -301,3 +301,27 @@ Webhook secret provisioning is intentionally managed outside Jenkins.
 
 - Full extended project content: [README-detailed.md](README-detailed.md)
 - Detailed architecture and flow analysis: [docs/architecture.md](docs/architecture.md)
+
+## 🖼️ Screenshots
+
+### Dashboards
+
+![AI Engine Streamlit Dashboard](docs/screenshots/ai-engin-stremlit-dashboard.png)
+![Grafana Metrics Dashboard](docs/screenshots/grafana-metrics-dashboard%28metrics-from-prometheus%29.png)
+![Grafana Logs Dashboard](docs/screenshots/Grafana-logs-dashboard%28logs-from-loki%29.png)
+![Promtail Dashboard](docs/screenshots/Promtail-dashboard.png)
+
+### Alerting and Detection
+
+![Alert in Prometheus Dashboard](docs/screenshots/Alert-in-prometheus-dashboard.png)
+![Alertmanager Dashboard](docs/screenshots/Alert-manager-dashboard.png)
+
+### Remediation Evidence
+
+![Pod Status Before CPU Load](docs/screenshots/pod%20status%20before%20cpu%20load.png)
+![Pod Status During Remediation](docs/screenshots/pod%20status%20in%20the%20remidation%20time.png)
+
+### Notifications and Delivery
+
+![Discord Notification Message](docs/screenshots/Discord-notification-message.png)
+![Jenkins Pipeline](docs/screenshots/Jenkins-pipline.png)
