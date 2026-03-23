@@ -19,3 +19,10 @@ spec:
         image: bacdocker/aiops-stress-app:v2
         ports:
         - containerPort: 5001
+        resources:
+          requests:
+            cpu: "100m"
+            memory: "128Mi"
+          limits:
+            cpu: "1500m"
+            memory: "1012Mi"

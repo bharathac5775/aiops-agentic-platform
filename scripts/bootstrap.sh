@@ -96,6 +96,7 @@ helm upgrade --install promtail grafana/promtail \
 echo "[8/10] Deploying application workloads..."
 kubectl apply -f k8s/stress-app-deployment.yaml
 kubectl apply -f k8s/stress-app-service.yaml
+kubectl apply -f k8s/stress-app-hpa.yaml
 kubectl apply -f k8s/ai-engine-deployment.yaml
 kubectl apply -f k8s/ai-engine-service.yaml
 

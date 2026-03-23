@@ -34,7 +34,7 @@ route:
   receiver: "null"
   routes:
   - matchers:
-    - alertname =~ "HighPodCPUUsage|HighMemoryUsage|PodCrashLoop|PodOOMKilled"
+    - alertname =~ "HighPodCPUUsage|HighMemoryUsage|PodCrashLoop|PodCrashLoopBackOff|PodOOMKilled|PodImagePullBackOff|PodImagePullBackOffPersistent|PodErrImagePull|PodCreateContainerConfigError|PodNotReadyTooLong"
     receiver: ai-engine
   - matchers:
     - alertname = "LokiPodHighMemory"

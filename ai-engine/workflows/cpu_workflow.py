@@ -14,11 +14,33 @@ from tools.rag import incident_memory_store
 ALLOWED_RECOMMENDATIONS = {
     "scale deployment",
     "restart pod",
+    "rollback deployment",
     "monitor",
     "investigate",
     "increase memory limit and restart pod",
     "no action",
     "investigate and restart pod",
+}
+
+IMAGE_PULL_ALERTS = {
+    "PodImagePullBackOff",
+    "PodErrImagePull",
+}
+
+PERSISTENT_IMAGE_PULL_ALERTS = {
+    "PodImagePullBackOffPersistent",
+}
+
+CRASHLOOP_WAITING_ALERTS = {
+    "PodCrashLoopBackOff",
+}
+
+CONFIG_ALERTS = {
+    "PodCreateContainerConfigError",
+}
+
+READINESS_ALERTS = {
+    "PodNotReadyTooLong",
 }
 
 
@@ -139,6 +161,12 @@ def route_after_metrics(state):
     memory = state.get("metrics", {}).get("memory_usage_bytes", 0)
 
     if alert_name in ["PodCrashLoop", "PodOOMKilled"]:
+        return "collect_logs"
+
+    if alert_name in CRASHLOOP_WAITING_ALERTS:
+        return "collect_logs"
+
+    if alert_name in IMAGE_PULL_ALERTS or alert_name in PERSISTENT_IMAGE_PULL_ALERTS or alert_name in CONFIG_ALERTS or alert_name in READINESS_ALERTS:
         return "collect_logs"
 
     if alert_name == "HighPodCPUUsage" and cpu > 0.7:
@@ -306,6 +334,7 @@ Similar incidents from memory (for context, do not copy blindly):
 
 - scale deployment
 - restart pod
+- rollback deployment
 - monitor
 - investigate
 - increase memory limit and restart pod
@@ -406,6 +435,12 @@ def decide_action(state):
             confidence = max(confidence, 0.9)
             guardrail_notes.append("cpu+timeout guardrail")
 
+        if alert_name == "HighPodCPUUsage" and cpu > 0.8 and recommendation != "scale deployment":
+            recommendation = "scale deployment"
+            root_cause = "Sustained high CPU saturation detected"
+            confidence = max(confidence, 0.9)
+            guardrail_notes.append("cpu-high-scale-only guardrail")
+
         if alert_name == "PodCrashLoop" and strong_crash_signal and recommendation in {"no action", "monitor", "investigate"}:
             recommendation = "investigate and restart pod"
             root_cause = "CrashLoop pattern detected with elevated restart count"
@@ -417,6 +452,36 @@ def decide_action(state):
             root_cause = "OOMKilled signal detected in metrics"
             confidence = max(confidence, 0.92)
             guardrail_notes.append("oom guardrail")
+
+        if alert_name in IMAGE_PULL_ALERTS and recommendation in {"monitor", "no action", "scale deployment"}:
+            recommendation = "investigate"
+            root_cause = "Image pull failure detected; validate image tag, registry access, and pull secrets"
+            confidence = max(confidence, 0.88)
+            guardrail_notes.append("imagepull investigate-first guardrail")
+
+        if alert_name in PERSISTENT_IMAGE_PULL_ALERTS and recommendation in {"monitor", "no action", "restart pod", "scale deployment", "investigate"}:
+            recommendation = "rollback deployment"
+            root_cause = "Persistent image pull failures across retries; rollback is safer than repeated restart"
+            confidence = max(confidence, 0.93)
+            guardrail_notes.append("persistent-imagepull rollback guardrail")
+
+        if alert_name in CRASHLOOP_WAITING_ALERTS and recommendation in {"monitor", "no action"}:
+            recommendation = "investigate and restart pod"
+            root_cause = "CrashLoopBackOff waiting state detected"
+            confidence = max(confidence, 0.9)
+            guardrail_notes.append("crashloopbackoff restart guardrail")
+
+        if alert_name in CONFIG_ALERTS and recommendation in {"monitor", "no action", "scale deployment"}:
+            recommendation = "investigate"
+            root_cause = "Container configuration error detected"
+            confidence = max(confidence, 0.85)
+            guardrail_notes.append("configerror investigate guardrail")
+
+        if alert_name in READINESS_ALERTS and recommendation in {"monitor", "no action"}:
+            recommendation = "restart pod"
+            root_cause = "Pod remained not-ready beyond threshold"
+            confidence = max(confidence, 0.88)
+            guardrail_notes.append("notready restart guardrail")
 
         decision_source = "llm-guardrailed" if guardrail_notes else "llm"
         recommended_by = "guardrail" if guardrail_notes else "llm"
@@ -466,21 +531,25 @@ def decide_action(state):
             decision = "investigate"
             root_cause = "CPU metrics unavailable or pod idle"
             confidence = 0.5
+        elif cpu > 0.9:
+            decision = "scale deployment"
+            root_cause = "Sustained high CPU saturation detected"
+            confidence = 0.9
         elif cpu > 0.85 and timeout_logs:
             decision = "scale deployment"
             root_cause = "High CPU + timeout errors in logs"
             confidence = 0.95
         elif cpu > 0.85 and error_logs:
-            decision = "restart pod"
-            root_cause = "High CPU with application errors in logs"
+            decision = "scale deployment"
+            root_cause = "High CPU with application errors in logs; prefer horizontal scaling"
             confidence = 0.92
         elif cpu > 0.85:
-            decision = "monitor"
-            root_cause = "High CPU without corroborating error logs"
-            confidence = 0.82
+            decision = "scale deployment"
+            root_cause = "High CPU without corroborating error logs; scale to absorb load"
+            confidence = 0.9
         elif cpu > 0.7:
-            decision = "monitor"
-            root_cause = "Moderate CPU usage"
+            decision = "scale deployment"
+            root_cause = "Elevated CPU usage under active alert"
             confidence = 0.85
         else:
             decision = "no action"
@@ -523,6 +592,16 @@ def decide_action(state):
             root_cause = "Restart rate currently below critical threshold"
             confidence = 0.7
 
+    elif alert_name in CRASHLOOP_WAITING_ALERTS:
+        if error_logs:
+            decision = "investigate and restart pod"
+            root_cause = "CrashLoopBackOff with application error signals"
+            confidence = 0.92
+        else:
+            decision = "restart pod"
+            root_cause = "CrashLoopBackOff waiting state detected"
+            confidence = 0.9
+
     elif alert_name == "PodOOMKilled":
         if oomkilled >= 1:
             decision = "increase memory limit and restart pod"
@@ -532,6 +611,31 @@ def decide_action(state):
             decision = "investigate"
             root_cause = "OOMKilled alert fired but metric not present now"
             confidence = 0.65
+
+    elif alert_name in IMAGE_PULL_ALERTS:
+        decision = "investigate"
+        root_cause = "Image pull failure indicates bad image/tag or registry authentication issue"
+        confidence = 0.88
+
+    elif alert_name in PERSISTENT_IMAGE_PULL_ALERTS:
+        decision = "rollback deployment"
+        root_cause = "Image pull failure persisted beyond retry threshold"
+        confidence = 0.93
+
+    elif alert_name in CONFIG_ALERTS:
+        decision = "investigate"
+        root_cause = "Container configuration error requires manifest/secret/config validation"
+        confidence = 0.85
+
+    elif alert_name in READINESS_ALERTS:
+        if restarts > 0:
+            decision = "restart pod"
+            root_cause = "Pod not ready and showing instability"
+            confidence = 0.88
+        else:
+            decision = "investigate"
+            root_cause = "Pod stayed not-ready without restart signal"
+            confidence = 0.8
 
     else:
         decision = "investigate"

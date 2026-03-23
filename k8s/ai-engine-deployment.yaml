@@ -15,7 +15,7 @@ spec:
       serviceAccountName: ai-engine-sa
       containers:
       - name: ai-engine
-        image: bacdocker/ai-engine:v20
+        image: bacdocker/ai-engine:v31
         ports:
         - containerPort: 8000
         env:
@@ -24,9 +24,9 @@ spec:
         - name: REMEDIATION_ALLOWED_NAMESPACES
           value: default,monitoring
         - name: AUTO_REMEDIATE
-          value: "false"
+          value: "true"
         - name: AUTO_REMEDIATION_MODE
-          value: "off"
+          value: "safe-auto"
         - name: AUTO_REMEDIATE_COOLDOWN_SECONDS
           value: "300"
         - name: AUTO_REMEDIATE_RETRY_WINDOW_SECONDS
@@ -39,10 +39,22 @@ spec:
           value: "0.90"
         - name: AUTO_MIN_CONFIDENCE_PODCRASHLOOP
           value: "0.90"
+        - name: AUTO_MIN_CONFIDENCE_PODCRASHLOOPBACKOFF
+          value: "0.90"
         - name: AUTO_MIN_CONFIDENCE_HIGHMEMORYUSAGE
           value: "0.93"
         - name: AUTO_MIN_CONFIDENCE_PODOOMKILLED
           value: "0.95"
+        - name: AUTO_MIN_CONFIDENCE_PODIMAGEPULLBACKOFFPERSISTENT
+          value: "0.93"
+        - name: IMAGE_PULL_RETRY_THRESHOLD
+          value: "3"
+        - name: REMEDIATION_HPA_NAME
+          value: stress-app-hpa
+        - name: HPA_AUTO_MAX_INCREMENT
+          value: "1"
+        - name: HPA_AUTO_MAX_CAP
+          value: "6"
         - name: INCIDENT_STORE_DIR
           value: /data/incidents
         - name: INCIDENT_MEMORY_BACKEND

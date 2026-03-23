@@ -45,7 +45,7 @@ This project builds an automated incident response system that:
               Observability Signals
                    │
                    ▼
-            Dynamic LangGraph Workflow
+          LangGraph Multi-Agent Workflow
                    │
                    ▼
               Analyze Alert Context
@@ -67,6 +67,41 @@ This project builds an automated incident response system that:
                         ▼
               Remediation API Action
 ```
+
+        ## 🧭 Agent Workflow
+
+        The AI engine executes a multi-agent orchestration path with guarded handoffs and fallback behavior.
+
+        ```mermaid
+        flowchart TD
+          A[Alertmanager Webhook] --> B[FastAPI /alerts]
+          B --> C[Monitor Agent]
+          C --> D{Agent Error?}
+          D -- No --> E[RCA Agent]
+          D -- Yes --> H[Fallback Agent]
+          E --> F{Agent Error?}
+          F -- No --> G[Remediation Agent]
+          F -- Yes --> H
+          G --> I{Agent Error?}
+          I -- No --> J[Report Agent]
+          I -- Yes --> H
+          H --> J
+          J --> K[Persist Incident + Markdown Report]
+          K --> L[Store Incident Memory in Chroma]
+        ```
+
+        ### Additional Improvements Implemented
+
+        - Added multi-agent traceability with per-agent status and detail events in incident records.
+        - Added persistent incident artifacts: JSONL history plus Markdown report generation.
+        - Added RAG similarity retrieval and write-back using Chroma persistent storage.
+        - Added RAG diagnostics endpoint: `GET /diagnostics/rag`.
+        - Added guarded auto-remediation modes with confidence thresholds, cooldown, and retry windows.
+        - Added persistent image-pull rollback safety checks with retry-threshold gating.
+        - Added HPA-aware scaling that can raise `maxReplicas` within configured caps.
+        - Added memory remediation that patches deployment memory limits and restarts workload safely.
+        - Added generalized target-container selection with selection reasoning in remediation responses.
+        - Added broader Kubernetes alert coverage and routing for crashloop/image-pull/config/readiness classes.
 
 ## 🛠 Tech Stack
 
@@ -966,8 +1001,8 @@ Supported actions:
 
 - `restart pod`
 - `scale deployment`
-- `increase memory limit and restart pod` (safe partial behavior: restart executed, limit patch deferred)
-- `rollback deployment` (currently blocked and deferred)
+- `increase memory limit and restart pod` (patches deployment memory limit, then restarts workload)
+- `rollback deployment` (supported with rollout-history and image-pull safety checks)
 
 Example response:
 
@@ -1002,6 +1037,10 @@ Dry-run example response:
 `GET /incidents/remediations?limit=50`
 
 - Returns recent remediation attempt history across incidents
+
+`GET /diagnostics/rag`
+
+- Returns active RAG backend, collection count, and latest retrieval-hit diagnostics
 
 ### Incident Report and History Store
 
@@ -1155,9 +1194,9 @@ Example processing flow:
         Invoke LangGraph Workflow
 ```
 
-### LangGraph Workflow
+### LangGraph Multi-Agent Workflow
 
-The AI engine uses LangGraph to orchestrate alert investigation.
+The AI engine uses LangGraph to orchestrate specialized agents for monitoring, RCA, remediation, and reporting.
 
 Workflow stages:
 
@@ -1165,34 +1204,21 @@ Workflow stages:
              Alert Received
                    │
                    ▼
-          Analyze Alert Context
+     Monitor Agent
                    │
                    ▼
-     Collect Metrics (CPU/MEM/RESTART/OOM)
+    RCA Agent (Precheck +
+  Routing + Optional LLM/RAG)
                    │
                    ▼
-        Pre-decision Check (fast path)
-              ┌─────┴─────┐
-              │           │
-              ▼           ▼
-        Skip logs/LLM    Analysis path
-        (direct decide)   │
-                          ▼
-                    Smart Routing
-                          │
-                          ▼
-                    Collect Logs?
-                   ┌──────┴──────┐
-                   │             │
-                   ▼             ▼
-               Yes: collect    No: skip
-                   │             │
-                   └──────┬──────┘
-                          ▼
-                  Run LLM RCA (optional)
-                          │
-                          ▼
-          Decide Remediation Strategy (guardrailed)
+  Remediation Agent (Policy +
+  Kubernetes Execution/Dry-Run)
+       │
+       ▼
+      Report Agent
+       │
+       ▼
+  Incident Report + Memory Write-back
 ```
 
 Prometheus client used by workflow:
@@ -1235,13 +1261,13 @@ The AI engine is packaged as a Docker container for Kubernetes deployment.
 Build image:
 
 ```bash
-docker build -t bacdocker/ai-engine:v20 ./ai-engine
+docker build -t bacdocker/ai-engine:v31 ./ai-engine
 ```
 
 Push image:
 
 ```bash
-docker push bacdocker/ai-engine:v20
+docker push bacdocker/ai-engine:v31
 ```
 
 ### Deploying AI Engine to Kubernetes
@@ -1281,7 +1307,7 @@ Routing rule:
 ```yaml
 routes:
 - matchers:
-     - alertname =~ "HighPodCPUUsage|HighMemoryUsage|PodCrashLoop|PodOOMKilled"
+  - alertname =~ "HighPodCPUUsage|HighMemoryUsage|PodCrashLoop|PodCrashLoopBackOff|PodOOMKilled|PodImagePullBackOff|PodErrImagePull|PodImagePullBackOffPersistent|PodCreateContainerConfigError|PodNotReadyTooLong"
   receiver: ai-engine
 ```
 
@@ -1294,7 +1320,13 @@ Configured alerts:
 - `HighPodCPUUsage`
 - `HighMemoryUsage`
 - `PodCrashLoop`
+- `PodCrashLoopBackOff`
 - `PodOOMKilled`
+- `PodImagePullBackOff`
+- `PodErrImagePull`
+- `PodImagePullBackOffPersistent`
+- `PodCreateContainerConfigError`
+- `PodNotReadyTooLong`
 
 Example CPU expression:
 
@@ -1356,30 +1388,28 @@ Alerts generated in Kubernetes can now automatically initiate AI-based workflows
 
 ### Workflow Intelligence and Guardrail Summary
 
-The current implementation combines dynamic routing, LLM RCA, and production safety controls.
+The current implementation combines multi-agent orchestration, LLM/RAG RCA, and production safety controls.
 
 Implemented changes:
 
-- Added dynamic execution path using pre-decision checks and conditional routing
-- Added optional `collect_logs` and optional `rca_analysis` execution based on alert signals
-- Added `rca_analysis` node for LLM RCA using Ollama
-- Added guardrails in decision stage to prevent unsafe/weak LLM recommendations when strong metric evidence exists
-- Added deterministic rule-based fallback path when LLM output is unavailable or invalid
-- Added decision provenance fields in output:
-     - `decision_source`
-     - `recommended_by`
-     - `guardrail_notes`
-- Added `reasoning_trace` for explainability (`used_metrics`, `used_logs`, `llm_used`, `guardrails_applied`)
-- Fixed JSON extraction/parsing reliability in LLM response handling
-- Added Kubernetes remediation execution in `/remediate` with namespace and action allowlists
-- Added auto-remediation policy modes for `/alerts`: `off`, `dry-run`, `safe-auto`
-- Added alert-type and confidence-based policy gating before auto action execution
-- Added anti-flapping protection with cooldown and retry-window limits
-- Updated fast-path RCA wording for transient recovery scenarios (`CPU spike recovered before analysis (transient condition)`)
-- Added adapter-based incident memory (RAG foundation) with Chroma backend and pluggable backend resolver
-- Added similar-incident retrieval context injection into RCA prompt for better decision consistency
-- Added post-decision memory write-back after incident persistence in both alert and manual remediation paths
-- Deployed and verified latest AI engine image: `bacdocker/ai-engine:v20`
+- Added LangGraph multi-agent chain: monitor, rca, remediate, report, and fallback.
+- Added agent-level trace capture for auditability and easier debugging.
+- Added dynamic precheck/routing to skip expensive steps on low-signal alerts.
+- Added LLM RCA with deterministic guardrails and rule-based fallback.
+- Added decision provenance fields: `decision_source`, `recommended_by`, and `guardrail_notes`.
+- Added explainability through `reasoning_trace` payloads.
+- Added robust JSON extraction and normalization for LLM outputs.
+- Added Kubernetes remediation execution via guarded action allowlists and namespace allowlists.
+- Added auto-remediation modes for `/alerts`: `off`, `dry-run`, and `safe-auto`.
+- Added confidence policy gates, cooldown windows, and retry limits to reduce flapping.
+- Added persistent image-pull rollback gating using retry-threshold checks and revision-history validation.
+- Added HPA-aware scaling with bounded automatic max-replica adjustments.
+- Added memory remediation flow: memory-limit patch plus pod restart/rollout restart fallback.
+- Added generalized target-container scoring with sidecar-aware heuristics.
+- Added container selection audit metadata in remediation responses.
+- Added adapter-based RAG with Chroma backend, retrieval augmentation, and memory write-back.
+- Added RAG diagnostics endpoint for runtime verification.
+- Updated and validated deployment using latest AI engine image: `bacdocker/ai-engine:v31`.
 
 ### Auto-Remediation Policy Modes
 
@@ -1556,8 +1586,8 @@ Routing pattern for AIOps alerts:
 Build and push AI engine container image:
 
 ```bash
-docker build -t bacdocker/ai-engine:v20 ./ai-engine
-docker push bacdocker/ai-engine:v20
+docker build -t bacdocker/ai-engine:v31 ./ai-engine
+docker push bacdocker/ai-engine:v31
 ```
 
 Deploy AI engine manifests:

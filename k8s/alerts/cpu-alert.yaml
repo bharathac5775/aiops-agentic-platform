@@ -38,6 +38,15 @@ spec:
         summary: "Pod Crash Loop"
         description: "Container restarting repeatedly"
 
+    - alert: PodCrashLoopBackOff
+      expr: max_over_time(kube_pod_container_status_waiting_reason{namespace="default",reason="CrashLoopBackOff"}[5m]) >= 1
+      for: 2m
+      labels:
+        severity: critical
+      annotations:
+        summary: "Pod CrashLoopBackOff"
+        description: "Container is in CrashLoopBackOff waiting state"
+
     - alert: PodOOMKilled
       expr: kube_pod_container_status_last_terminated_reason{namespace="default",reason="OOMKilled"} == 1
       for: 30s
@@ -46,3 +55,55 @@ spec:
       annotations:
         summary: "Pod OOMKilled"
         description: "Container killed due to memory exhaustion"
+
+    - alert: PodImagePullBackOff
+      expr: max_over_time(kube_pod_container_status_waiting_reason{namespace="default",reason="ImagePullBackOff"}[5m]) >= 1
+      for: 2m
+      labels:
+        severity: critical
+      annotations:
+        summary: "Pod ImagePullBackOff"
+        description: "Container image pull backoff detected"
+
+    - alert: PodImagePullBackOffPersistent
+      expr: |
+        (
+          max_over_time(kube_pod_container_status_waiting_reason{namespace="default",reason="ImagePullBackOff"}[10m]) >= 1
+        )
+        and
+        (
+          increase(kube_pod_container_status_restarts_total{namespace="default"}[10m]) >= 3
+        )
+      for: 5m
+      labels:
+        severity: critical
+      annotations:
+        summary: "Pod ImagePullBackOff Persistent"
+        description: "Image pull failure has persisted beyond retry threshold"
+
+    - alert: PodErrImagePull
+      expr: max_over_time(kube_pod_container_status_waiting_reason{namespace="default",reason="ErrImagePull"}[5m]) >= 1
+      for: 2m
+      labels:
+        severity: critical
+      annotations:
+        summary: "Pod ErrImagePull"
+        description: "Container image pull error detected"
+
+    - alert: PodCreateContainerConfigError
+      expr: max_over_time(kube_pod_container_status_waiting_reason{namespace="default",reason="CreateContainerConfigError"}[5m]) >= 1
+      for: 2m
+      labels:
+        severity: warning
+      annotations:
+        summary: "Pod CreateContainerConfigError"
+        description: "Container configuration error detected"
+
+    - alert: PodNotReadyTooLong
+      expr: min_over_time(kube_pod_status_ready{namespace="default",condition="true"}[10m]) == 0
+      for: 10m
+      labels:
+        severity: warning
+      annotations:
+        summary: "Pod Not Ready Too Long"
+        description: "Pod has remained not ready for an extended period"

@@ -1,5 +1,6 @@
 from fastapi import FastAPI, Request
 from datetime import datetime, timezone
+import math
 import os
 import time
 import json
@@ -8,15 +9,16 @@ import hashlib
 from pathlib import Path
 from kubernetes import client, config
 from kubernetes.client.exceptions import ApiException
-from workflows.cpu_workflow import build_graph
+from workflows.agent_workflow import build_agent_graph
 from tools.rag import incident_memory_store
 
-workflow = build_graph()
+workflow = build_agent_graph()
 
 app = FastAPI()
 
 _core_v1_api = None
 _apps_v1_api = None
+_autoscaling_v2_api = None
 
 ALLOWED_ACTIONS = {
     "restart pod",
@@ -29,6 +31,18 @@ SAFE_AUTO_ACTIONS = {
     "restart pod",
     "scale deployment",
 }
+
+IMAGE_PULL_ROLLBACK_ALERTS = {
+    "PodImagePullBackOff",
+    "PodErrImagePull",
+    "PodImagePullBackOffPersistent",
+}
+
+PERSISTENT_IMAGE_PULL_ROLLBACK_ALERTS = {
+    "PodImagePullBackOffPersistent",
+}
+
+IMAGE_PULL_RETRY_THRESHOLD = int(os.getenv("IMAGE_PULL_RETRY_THRESHOLD", "3"))
 
 ALLOWED_NAMESPACES = {
     ns.strip() for ns in os.getenv("REMEDIATION_ALLOWED_NAMESPACES", "default,monitoring").split(",") if ns.strip()
@@ -192,6 +206,40 @@ def _extract_remediation_history(limit: int = 50):
     return attempts[-max(1, min(limit, 500)):][::-1]
 
 
+def _get_rag_collection_count():
+    collection = getattr(incident_memory_store, "_collection", None)
+    if collection is None:
+        return None
+
+    try:
+        return int(collection.count())
+    except Exception:
+        return None
+
+
+def _build_rag_diagnostics():
+    backend_name = incident_memory_store.__class__.__name__
+    collection_count = _get_rag_collection_count()
+
+    latest = _load_recent_incidents(limit=1)
+    latest_incident = latest[0] if latest else None
+    analysis = (latest_incident or {}).get("analysis") or {}
+    similar_incidents = analysis.get("similar_incidents") or []
+
+    top_match = similar_incidents[0] if similar_incidents else {}
+    top_metadata = (top_match or {}).get("metadata") or {}
+
+    return {
+        "backend_name": backend_name,
+        "collection_count": collection_count,
+        "last_incident_id": (latest_incident or {}).get("incident_id"),
+        "last_incident_alert_name": (latest_incident or {}).get("alert_name"),
+        "last_incident_rag_hit_count": len(similar_incidents),
+        "top_matched_incident_id": top_metadata.get("incident_id"),
+        "top_matched_distance": (top_match or {}).get("distance"),
+    }
+
+
 def _env_float(name: str, default: float):
     try:
         return float(os.getenv(name, str(default)))
@@ -207,19 +255,43 @@ ALERT_POLICY = {
     },
     "HighPodCPUUsage": {
         "min_confidence": _env_float("AUTO_MIN_CONFIDENCE_HIGHPODCPUUSAGE", 0.9),
-        "allowed_actions": {"scale deployment", "restart pod"},
+        "allowed_actions": {"scale deployment"},
     },
     "PodCrashLoop": {
         "min_confidence": _env_float("AUTO_MIN_CONFIDENCE_PODCRASHLOOP", 0.9),
         "allowed_actions": {"restart pod"},
     },
+    "PodCrashLoopBackOff": {
+        "min_confidence": _env_float("AUTO_MIN_CONFIDENCE_PODCRASHLOOPBACKOFF", 0.9),
+        "allowed_actions": {"restart pod"},
+    },
     "HighMemoryUsage": {
         "min_confidence": _env_float("AUTO_MIN_CONFIDENCE_HIGHMEMORYUSAGE", 0.93),
-        "allowed_actions": {"restart pod"},
+        "allowed_actions": {"restart pod", "increase memory limit and restart pod"},
     },
     "PodOOMKilled": {
         "min_confidence": _env_float("AUTO_MIN_CONFIDENCE_PODOOMKILLED", 0.95),
         "allowed_actions": set(),
+    },
+    "PodImagePullBackOff": {
+        "min_confidence": _env_float("AUTO_MIN_CONFIDENCE_PODIMAGEPULLBACKOFF", 0.9),
+        "allowed_actions": set(),
+    },
+    "PodImagePullBackOffPersistent": {
+        "min_confidence": _env_float("AUTO_MIN_CONFIDENCE_PODIMAGEPULLBACKOFFPERSISTENT", 0.93),
+        "allowed_actions": {"rollback deployment"},
+    },
+    "PodErrImagePull": {
+        "min_confidence": _env_float("AUTO_MIN_CONFIDENCE_PODERRIMAGEPULL", 0.9),
+        "allowed_actions": set(),
+    },
+    "PodCreateContainerConfigError": {
+        "min_confidence": _env_float("AUTO_MIN_CONFIDENCE_PODCREATECONTAINERCONFIGERROR", 0.85),
+        "allowed_actions": {"restart pod"},
+    },
+    "PodNotReadyTooLong": {
+        "min_confidence": _env_float("AUTO_MIN_CONFIDENCE_PODNOTREADYTOOLONG", 0.88),
+        "allowed_actions": {"restart pod"},
     },
 }
 
@@ -235,7 +307,7 @@ def _resolve_auto_remediation_mode():
     return "safe-auto" if AUTO_REMEDIATE else "off"
 
 
-def _should_auto_execute(action: str):
+def _should_auto_execute(action: str, alert_name: str | None = None):
     mode = _resolve_auto_remediation_mode()
     normalized_action = _normalize_action(action)
 
@@ -246,7 +318,29 @@ def _should_auto_execute(action: str):
         return True, mode, False
 
     # mode == safe-auto
-    return normalized_action in SAFE_AUTO_ACTIONS, mode, normalized_action in SAFE_AUTO_ACTIONS
+    if normalized_action in SAFE_AUTO_ACTIONS:
+        return True, mode, True
+
+    if normalized_action == "increase memory limit and restart pod" and alert_name == "HighMemoryUsage":
+        return True, mode, True
+
+    if normalized_action == "rollback deployment" and alert_name in PERSISTENT_IMAGE_PULL_ROLLBACK_ALERTS:
+        return True, mode, True
+
+    return False, mode, False
+
+
+def _get_pod_max_restart_count_for_image_pull(core_v1_api, pod: str, namespace: str):
+    pod_obj = core_v1_api.read_namespaced_pod(name=pod, namespace=namespace)
+    statuses = list(pod_obj.status.container_statuses or []) + list(pod_obj.status.init_container_statuses or [])
+
+    max_restart = 0
+    for status in statuses:
+        waiting_reason = ((status.state.waiting.reason if status.state and status.state.waiting else "") or "").strip()
+        if waiting_reason in {"ImagePullBackOff", "ErrImagePull"}:
+            max_restart = max(max_restart, int(status.restart_count or 0))
+
+    return max_restart
 
 
 def _prune_attempts(now_ts: float):
@@ -288,7 +382,7 @@ def _register_auto_attempt(alert_name: str, pod: str, namespace: str, action: st
 
 def _evaluate_auto_policy(alert_name: str, pod: str, namespace: str, recommendation: str, confidence):
     normalized_action = _normalize_action(recommendation)
-    should_run, auto_mode, execute_real = _should_auto_execute(normalized_action)
+    should_run, auto_mode, execute_real = _should_auto_execute(normalized_action, alert_name=alert_name)
 
     if not should_run:
         return {
@@ -316,6 +410,37 @@ def _evaluate_auto_policy(alert_name: str, pod: str, namespace: str, recommendat
             "reason": "action-not-allowed-for-alert",
             "action": normalized_action,
         }
+
+    if normalized_action == "rollback deployment" and alert_name in PERSISTENT_IMAGE_PULL_ROLLBACK_ALERTS:
+        if not pod:
+            return {
+                "run": False,
+                "mode": auto_mode,
+                "execute_real": False,
+                "reason": "missing-pod-for-imagepull-retry-check",
+                "action": normalized_action,
+            }
+
+        try:
+            core_v1_api, _ = _load_k8s_clients()
+            retry_count = _get_pod_max_restart_count_for_image_pull(core_v1_api, pod=pod, namespace=namespace)
+        except Exception as error:
+            return {
+                "run": False,
+                "mode": auto_mode,
+                "execute_real": False,
+                "reason": f"imagepull-retry-check-failed:{error}",
+                "action": normalized_action,
+            }
+
+        if retry_count < IMAGE_PULL_RETRY_THRESHOLD:
+            return {
+                "run": False,
+                "mode": auto_mode,
+                "execute_real": False,
+                "reason": f"imagepull-retries-below-threshold({retry_count}<{IMAGE_PULL_RETRY_THRESHOLD})",
+                "action": normalized_action,
+            }
 
     if confidence_value < min_confidence:
         return {
@@ -381,11 +506,24 @@ def _load_k8s_clients():
     return _core_v1_api, _apps_v1_api
 
 
+def _load_autoscaling_v2_client():
+    global _autoscaling_v2_api
+
+    if _autoscaling_v2_api:
+        return _autoscaling_v2_api
+
+    # Reuse the same config bootstrap logic before creating additional clients.
+    _load_k8s_clients()
+    _autoscaling_v2_api = client.AutoscalingV2Api()
+    return _autoscaling_v2_api
+
+
 def _normalize_action(action: str | None):
     value = str(action or "").strip().lower()
     aliases = {
         "restart": "restart pod",
         "restart container": "restart pod",
+        "investigate and restart pod": "restart pod",
         "scale": "scale deployment",
         "scale up": "scale deployment",
         "rollback": "rollback deployment",
@@ -407,7 +545,272 @@ def _namespace_allowed(namespace: str) -> bool:
     return namespace in ALLOWED_NAMESPACES
 
 
-def _execute_remediation(action: str, pod: str | None, namespace: str, deployment: str | None = None, replicas: int | None = None, dry_run: bool = False):
+def _parse_memory_to_bytes(quantity: str | None) -> int:
+    value = str(quantity or "").strip()
+    if not value:
+        raise ValueError("memory quantity is empty")
+
+    binary_units = {
+        "Ki": 1024,
+        "Mi": 1024**2,
+        "Gi": 1024**3,
+        "Ti": 1024**4,
+        "Pi": 1024**5,
+        "Ei": 1024**6,
+    }
+
+    for suffix, multiplier in binary_units.items():
+        if value.endswith(suffix):
+            number = float(value[: -len(suffix)])
+            return int(number * multiplier)
+
+    return int(float(value))
+
+
+def _format_bytes_to_mi(bytes_value: int) -> str:
+    mebibyte = 1024**2
+    target_mi = max(1, int(math.ceil(bytes_value / mebibyte)))
+    return f"{target_mi}Mi"
+
+
+def _looks_like_sidecar(container_name: str) -> bool:
+    name = (container_name or "").strip().lower()
+    if not name:
+        return False
+
+    sidecar_tokens = (
+        "istio-proxy",
+        "linkerd-proxy",
+        "envoy",
+        "fluent",
+        "promtail",
+        "datadog",
+        "newrelic",
+        "otel",
+        "sidecar",
+    )
+    return any(token in name for token in sidecar_tokens)
+
+
+def _pick_target_container_with_reason(deployment_obj, pod_obj=None):
+    containers = (deployment_obj.spec.template.spec.containers or [])
+    if not containers:
+        return None, {
+            "strategy": "none",
+            "reason": "deployment has no containers",
+        }
+
+    preferred_name = os.getenv("REMEDIATION_MEMORY_TARGET_CONTAINER", "").strip()
+    preferred_not_found = False
+    if preferred_name:
+        for container_obj in containers:
+            if container_obj.name == preferred_name:
+                return container_obj, {
+                    "strategy": "explicit-env",
+                    "reason": "matched REMEDIATION_MEMORY_TARGET_CONTAINER",
+                    "selected_container": container_obj.name,
+                    "selected_score": None,
+                }
+        preferred_not_found = True
+
+    if len(containers) == 1:
+        return containers[0], {
+            "strategy": "single-container",
+            "reason": "only one container available",
+            "selected_container": containers[0].name,
+            "selected_score": None,
+        }
+
+    statuses = []
+    if pod_obj is not None and getattr(pod_obj, "status", None) is not None:
+        statuses = list(pod_obj.status.container_statuses or []) + list(pod_obj.status.init_container_statuses or [])
+
+    status_by_name = {status.name: status for status in statuses if getattr(status, "name", None)}
+
+    best = None
+    best_score = -10**9
+    candidates = []
+
+    for container_obj in containers:
+        score = 0
+        status = status_by_name.get(container_obj.name)
+
+        if status is not None:
+            score += int(status.restart_count or 0) * 10
+
+            # Prefer the container that exhibits OOM symptoms.
+            state = getattr(status, "state", None)
+            last_state = getattr(status, "last_state", None)
+            terminated = getattr(state, "terminated", None) or getattr(last_state, "terminated", None)
+            waiting = getattr(state, "waiting", None)
+
+            term_reason = (getattr(terminated, "reason", "") or "").strip()
+            wait_reason = (getattr(waiting, "reason", "") or "").strip()
+
+            if term_reason == "OOMKilled" or wait_reason == "OOMKilled":
+                score += 100
+
+        if _looks_like_sidecar(container_obj.name):
+            score -= 25
+        else:
+            score += 5
+
+        limits = (container_obj.resources.limits if container_obj.resources else {}) or {}
+        if limits.get("memory"):
+            score += 2
+
+        candidates.append(
+            {
+                "container": container_obj.name,
+                "score": score,
+            }
+        )
+
+        if score > best_score:
+            best = container_obj
+            best_score = score
+
+    if best is not None:
+        return best, {
+            "strategy": "scored-selection",
+            "reason": (
+                "selected highest score using pod signals, sidecar heuristic, and memory limits"
+                if not preferred_not_found
+                else "preferred container from REMEDIATION_MEMORY_TARGET_CONTAINER was not found; used scored-selection fallback"
+            ),
+            "selected_container": best.name,
+            "selected_score": best_score,
+            "candidates": candidates,
+            "preferred_container": preferred_name if preferred_not_found else None,
+        }
+
+    fallback = containers[0]
+    return fallback, {
+        "strategy": "fallback-first",
+        "reason": (
+            "no scored candidate selected; defaulted to first container"
+            if not preferred_not_found
+            else "preferred container from REMEDIATION_MEMORY_TARGET_CONTAINER was not found; defaulted to first container"
+        ),
+        "selected_container": fallback.name,
+        "selected_score": None,
+        "preferred_container": preferred_name if preferred_not_found else None,
+    }
+
+
+def _compute_memory_target(current_limit: str):
+    current_bytes = _parse_memory_to_bytes(current_limit)
+    increment_percent = float(os.getenv("REMEDIATION_MEMORY_INCREMENT_PERCENT", "25"))
+    max_limit_raw = os.getenv("REMEDIATION_MEMORY_MAX", "4Gi")
+    max_bytes = _parse_memory_to_bytes(max_limit_raw)
+
+    increased_bytes = int(current_bytes * (1 + (increment_percent / 100.0)))
+    target_bytes = min(max_bytes, max(increased_bytes, current_bytes + 1024**2))
+
+    return {
+        "from": current_limit,
+        "to": _format_bytes_to_mi(target_bytes),
+        "from_bytes": current_bytes,
+        "to_bytes": target_bytes,
+        "max": max_limit_raw,
+        "increment_percent": increment_percent,
+    }
+
+
+def _ensure_hpa_capacity(namespace: str, deployment_name: str, desired_replicas: int, dry_run: bool = False):
+    autoscaling_v2_api = _load_autoscaling_v2_client()
+    hpa_name = os.getenv("REMEDIATION_HPA_NAME", "").strip() or deployment_name
+    max_cap = max(1, int(os.getenv("HPA_AUTO_MAX_CAP", "10")))
+    increment = max(1, int(os.getenv("HPA_AUTO_MAX_INCREMENT", "1")))
+
+    try:
+        hpa = autoscaling_v2_api.read_namespaced_horizontal_pod_autoscaler(name=hpa_name, namespace=namespace)
+    except ApiException as api_error:
+        if api_error.status == 404:
+            return {
+                "hpa_found": False,
+                "hpa_name": hpa_name,
+                "reason": "hpa-not-found",
+            }
+        return {
+            "hpa_found": False,
+            "hpa_name": hpa_name,
+            "reason": f"hpa-read-failed:{api_error.status}-{api_error.reason}",
+        }
+
+    target_ref = hpa.spec.scale_target_ref
+    if (target_ref.kind or "") != "Deployment" or (target_ref.name or "") != deployment_name:
+        return {
+            "hpa_found": True,
+            "hpa_name": hpa_name,
+            "target_mismatch": True,
+            "reason": "hpa-target-mismatch",
+            "hpa_target_kind": target_ref.kind,
+            "hpa_target_name": target_ref.name,
+        }
+
+    current_max = int(hpa.spec.max_replicas or 1)
+    updated = False
+    new_max = current_max
+
+    if desired_replicas > current_max:
+        new_max = min(max_cap, max(current_max + increment, desired_replicas))
+        if new_max > current_max:
+            if not dry_run:
+                autoscaling_v2_api.patch_namespaced_horizontal_pod_autoscaler(
+                    name=hpa_name,
+                    namespace=namespace,
+                    body={"spec": {"maxReplicas": new_max}},
+                )
+            updated = True
+
+    return {
+        "hpa_found": True,
+        "hpa_name": hpa_name,
+        "target_mismatch": False,
+        "hpa_max_before": current_max,
+        "hpa_max_after": new_max,
+        "hpa_updated": updated,
+        "hpa_max_cap": max_cap,
+        "hpa_increment": increment,
+    }
+
+
+def _trigger_rollout_restart(apps_v1_api, deployment_name: str, namespace: str):
+    body = {
+        "spec": {
+            "template": {
+                "metadata": {
+                    "annotations": {
+                        "kubectl.kubernetes.io/restartedAt": _utc_now_iso(),
+                    }
+                }
+            }
+        }
+    }
+    apps_v1_api.patch_namespaced_deployment(name=deployment_name, namespace=namespace, body=body)
+
+
+def _list_deployment_replicasets(apps_v1_api, deployment_obj, namespace: str):
+    selector = deployment_obj.spec.selector.match_labels or {}
+    selector_text = ",".join(f"{k}={v}" for k, v in selector.items()) if selector else None
+    rs_list = apps_v1_api.list_namespaced_replica_set(namespace=namespace, label_selector=selector_text)
+
+    owned = []
+    for rs in rs_list.items:
+        owners = rs.metadata.owner_references or []
+        if any(owner.kind == "Deployment" and owner.name == deployment_obj.metadata.name for owner in owners):
+            revision_raw = (rs.metadata.annotations or {}).get("deployment.kubernetes.io/revision")
+            try:
+                revision = int(revision_raw)
+            except Exception:
+                revision = 0
+            owned.append((revision, rs))
+
+    return sorted(owned, key=lambda item: item[0], reverse=True)
+
+
+def _execute_remediation(action: str, pod: str | None, namespace: str, deployment: str | None = None, replicas: int | None = None, dry_run: bool = False, target_revision: int | None = None, alert_name: str | None = None):
     normalized_action = _normalize_action(action)
     if normalized_action not in ALLOWED_ACTIONS:
         return {
@@ -462,6 +865,16 @@ def _execute_remediation(action: str, pod: str | None, namespace: str, deploymen
             current = int(deployment_obj.spec.replicas or 1)
             target = int(replicas) if replicas is not None else min(current + 1, 10)
             target = max(1, target)
+            hpa_capacity = _ensure_hpa_capacity(
+                namespace=namespace,
+                deployment_name=target_deployment,
+                desired_replicas=target,
+                dry_run=dry_run,
+            )
+
+            if hpa_capacity.get("hpa_found") and not hpa_capacity.get("target_mismatch"):
+                hpa_max_after = int(hpa_capacity.get("hpa_max_after") or target)
+                target = min(target, hpa_max_after)
 
             if dry_run:
                 return {
@@ -471,6 +884,7 @@ def _execute_remediation(action: str, pod: str | None, namespace: str, deploymen
                     "deployment": target_deployment,
                     "from_replicas": current,
                     "to_replicas": target,
+                    "hpa": hpa_capacity,
                 }
 
             body = {"spec": {"replicas": target}}
@@ -482,41 +896,221 @@ def _execute_remediation(action: str, pod: str | None, namespace: str, deploymen
                 "deployment": target_deployment,
                 "from_replicas": current,
                 "to_replicas": target,
+                "hpa": hpa_capacity,
             }
 
         if normalized_action == "increase memory limit and restart pod":
-            # Day 14 safe implementation: restart pod immediately and defer resource mutation
-            # policy to later automation step where memory target policy is introduced.
-            if not pod:
+            if not target_deployment:
                 return {
                     "status": "blocked",
-                    "reason": "pod is required for memory-limit-and-restart action",
+                    "reason": "deployment is required or inferable from pod for memory-limit-and-restart action",
                     "action": normalized_action,
                 }
+
+            deployment_obj = apps_v1_api.read_namespaced_deployment(name=target_deployment, namespace=namespace)
+            pod_obj = None
+            if pod:
+                try:
+                    pod_obj = core_v1_api.read_namespaced_pod(name=pod, namespace=namespace)
+                except Exception:
+                    pod_obj = None
+
+            target_container, container_selection_reason = _pick_target_container_with_reason(deployment_obj, pod_obj=pod_obj)
+
+            if target_container is None:
+                return {
+                    "status": "blocked",
+                    "reason": "no containers found in target deployment",
+                    "action": normalized_action,
+                    "deployment": target_deployment,
+                    "container_selection_reason": container_selection_reason,
+                }
+
+            current_limits = (target_container.resources.limits if target_container.resources else {}) or {}
+            current_memory_limit = current_limits.get("memory")
+
+            if not current_memory_limit:
+                return {
+                    "status": "blocked",
+                    "reason": "target container has no memory limit to increase",
+                    "action": normalized_action,
+                    "deployment": target_deployment,
+                    "container": target_container.name,
+                    "container_selection_reason": container_selection_reason,
+                }
+
+            memory_target = _compute_memory_target(current_memory_limit)
+
             if dry_run:
                 return {
                     "status": "dry-run",
                     "action": normalized_action,
                     "namespace": namespace,
                     "pod": pod,
-                    "note": "resource-limit patch deferred; pod restart would be executed",
+                    "deployment": target_deployment,
+                    "container": target_container.name,
+                    "container_selection_reason": container_selection_reason,
+                    "memory_from": memory_target["from"],
+                    "memory_to": memory_target["to"],
+                    "note": "deployment memory limit would be patched, then workload restarted",
                 }
 
-            core_v1_api.delete_namespaced_pod(name=pod, namespace=namespace)
+            body = {
+                "spec": {
+                    "template": {
+                        "spec": {
+                            "containers": [
+                                {
+                                    "name": target_container.name,
+                                    "resources": {
+                                        "limits": {
+                                            "memory": memory_target["to"],
+                                        }
+                                    },
+                                }
+                            ]
+                        }
+                    }
+                }
+            }
+            apps_v1_api.patch_namespaced_deployment(name=target_deployment, namespace=namespace, body=body)
+
+            if pod:
+                try:
+                    core_v1_api.delete_namespaced_pod(name=pod, namespace=namespace)
+                    restart_mode = "pod-delete"
+                except ApiException as api_error:
+                    # Deployment template was already patched. If the pod was replaced concurrently,
+                    # continue with rollout restart instead of failing the entire remediation.
+                    if api_error.status == 404:
+                        _trigger_rollout_restart(apps_v1_api, target_deployment, namespace)
+                        restart_mode = "deployment-rollout-restart(pod-not-found)"
+                    else:
+                        raise
+            else:
+                _trigger_rollout_restart(apps_v1_api, target_deployment, namespace)
+                restart_mode = "deployment-rollout-restart"
+
             return {
                 "status": "executed",
                 "action": normalized_action,
                 "namespace": namespace,
                 "pod": pod,
-                "note": "pod restarted; memory limit patch deferred to policy-driven step",
+                "deployment": target_deployment,
+                "container": target_container.name,
+                "container_selection_reason": container_selection_reason,
+                "memory_from": memory_target["from"],
+                "memory_to": memory_target["to"],
+                "restart_mode": restart_mode,
             }
 
         if normalized_action == "rollback deployment":
-            # Kubernetes Python client has no stable rollout-undo equivalent in AppsV1 API.
+            if alert_name in IMAGE_PULL_ROLLBACK_ALERTS:
+                if not pod:
+                    return {
+                        "status": "blocked",
+                        "action": normalized_action,
+                        "reason": "pod is required for image-pull rollback safety check",
+                    }
+                try:
+                    retry_count = _get_pod_max_restart_count_for_image_pull(core_v1_api, pod=pod, namespace=namespace)
+                except Exception as error:
+                    return {
+                        "status": "blocked",
+                        "action": normalized_action,
+                        "reason": f"image-pull retry inspection failed: {error}",
+                    }
+
+                if retry_count < IMAGE_PULL_RETRY_THRESHOLD:
+                    return {
+                        "status": "blocked",
+                        "action": normalized_action,
+                        "reason": f"image-pull retries below threshold ({retry_count}<{IMAGE_PULL_RETRY_THRESHOLD})",
+                    }
+
+            if not target_deployment:
+                return {
+                    "status": "blocked",
+                    "action": normalized_action,
+                    "reason": "deployment is required or inferable from pod for rollback",
+                }
+
+            deployment_obj = apps_v1_api.read_namespaced_deployment(name=target_deployment, namespace=namespace)
+            revision_raw = (deployment_obj.metadata.annotations or {}).get("deployment.kubernetes.io/revision")
+            try:
+                current_revision = int(revision_raw)
+            except Exception:
+                current_revision = 0
+
+            rs_revisions = _list_deployment_replicasets(apps_v1_api, deployment_obj, namespace)
+            if not rs_revisions:
+                return {
+                    "status": "blocked",
+                    "action": normalized_action,
+                    "reason": "no rollout history found for deployment",
+                    "deployment": target_deployment,
+                }
+
+            if target_revision is not None:
+                desired_revision = int(target_revision)
+            else:
+                desired_revision = 0
+                for revision, _ in rs_revisions:
+                    if current_revision and revision < current_revision:
+                        desired_revision = revision
+                        break
+
+            if desired_revision <= 0:
+                return {
+                    "status": "blocked",
+                    "action": normalized_action,
+                    "reason": "no previous revision available to roll back",
+                    "deployment": target_deployment,
+                    "current_revision": current_revision,
+                }
+
+            target_rs = None
+            for revision, rs in rs_revisions:
+                if revision == desired_revision:
+                    target_rs = rs
+                    break
+
+            if target_rs is None:
+                return {
+                    "status": "blocked",
+                    "action": normalized_action,
+                    "reason": f"target revision {desired_revision} not found in rollout history",
+                    "deployment": target_deployment,
+                    "current_revision": current_revision,
+                }
+
+            api_client = client.ApiClient()
+            target_template = api_client.sanitize_for_serialization(target_rs.spec.template)
+
+            if dry_run:
+                return {
+                    "status": "dry-run",
+                    "action": normalized_action,
+                    "namespace": namespace,
+                    "deployment": target_deployment,
+                    "from_revision": current_revision,
+                    "to_revision": desired_revision,
+                }
+
+            body = {
+                "spec": {
+                    "template": target_template,
+                }
+            }
+            apps_v1_api.patch_namespaced_deployment(name=target_deployment, namespace=namespace, body=body)
+
             return {
-                "status": "blocked",
+                "status": "executed",
                 "action": normalized_action,
-                "reason": "rollback deployment requires revision-aware rollout strategy and is deferred",
+                "namespace": namespace,
+                "deployment": target_deployment,
+                "from_revision": current_revision,
+                "to_revision": desired_revision,
             }
 
         return {
@@ -572,6 +1166,11 @@ def get_incident(incident_id: str):
     return incident
 
 
+@app.get("/diagnostics/rag")
+def rag_diagnostics():
+    return _build_rag_diagnostics()
+
+
 @app.post("/alerts")
 async def receive_alert(request: Request):
 
@@ -613,64 +1212,77 @@ async def receive_alert(request: Request):
 
         try:
             state = workflow.invoke({
-                "alert": alert
+                "alert": alert,
+                "evaluate_auto_policy_fn": _evaluate_auto_policy,
+                "execute_remediation_fn": _execute_remediation,
+                "analysis_only": False,
             })
 
             result = state.get("result", {})
 
             log("RESULT", f"{result}")
 
-            decision = _evaluate_auto_policy(
-                alert_name=alert_name,
-                pod=result.get("pod") or pod_name,
-                namespace=namespace,
-                recommendation=result.get("recommendation"),
-                confidence=result.get("confidence", 0),
-            )
+            decision = state.get("auto_policy_decision")
+            remediation_attempt = state.get("remediation_attempt")
 
-            if decision["run"]:
-                remediation_response = _execute_remediation(
-                    action=result.get("recommendation"),
+            # Compatibility fallback: preserve old behavior if agent callbacks were bypassed.
+            if not isinstance(decision, dict):
+                decision = _evaluate_auto_policy(
+                    alert_name=alert_name,
                     pod=result.get("pod") or pod_name,
                     namespace=namespace,
-                    deployment=result.get("deployment"),
-                    replicas=result.get("target_replicas"),
-                    dry_run=not decision["execute_real"],
+                    recommendation=result.get("recommendation"),
+                    confidence=result.get("confidence", 0),
                 )
-                remediation_attempts.append(
-                    {
-                        "timestamp": _utc_now_iso(),
-                        "source": "auto-policy",
-                        "action": result.get("recommendation"),
-                        "mode": decision["mode"],
-                        "reason": decision["reason"],
-                        "outcome": remediation_response.get("status", "unknown"),
-                        "response": remediation_response,
-                    }
-                )
-                log(
-                    "REMEDIATE",
-                    f"mode={decision['mode']} decision={decision['reason']} response={remediation_response}",
-                )
+
+            if isinstance(remediation_attempt, dict):
+                remediation_attempts.append(remediation_attempt)
+                log("REMEDIATE", f"agent-chain attempt={remediation_attempt}")
             else:
-                remediation_attempts.append(
-                    {
-                        "timestamp": _utc_now_iso(),
-                        "source": "auto-policy",
-                        "action": decision.get("action"),
-                        "mode": decision["mode"],
-                        "reason": decision["reason"],
-                        "outcome": "skipped",
-                        "response": decision,
-                    }
-                )
-                log(
-                    "REMEDIATE",
-                    (
-                        f"mode={decision['mode']} skipped action={decision['action']} "
-                        f"reason={decision['reason']}"
-                    ),
-                )
+                if decision["run"]:
+                    remediation_response = _execute_remediation(
+                        action=result.get("recommendation"),
+                        pod=result.get("pod") or pod_name,
+                        namespace=namespace,
+                        deployment=result.get("deployment"),
+                        replicas=result.get("target_replicas"),
+                        alert_name=alert_name,
+                        dry_run=not decision["execute_real"],
+                    )
+                    remediation_attempts.append(
+                        {
+                            "timestamp": _utc_now_iso(),
+                            "source": "auto-policy",
+                            "action": result.get("recommendation"),
+                            "mode": decision["mode"],
+                            "reason": decision["reason"],
+                            "outcome": remediation_response.get("status", "unknown"),
+                            "response": remediation_response,
+                        }
+                    )
+                    log(
+                        "REMEDIATE",
+                        f"mode={decision['mode']} decision={decision['reason']} response={remediation_response}",
+                    )
+                else:
+                    remediation_attempts.append(
+                        {
+                            "timestamp": _utc_now_iso(),
+                            "source": "auto-policy",
+                            "action": decision.get("action"),
+                            "mode": decision["mode"],
+                            "reason": decision["reason"],
+                            "outcome": "skipped",
+                            "response": decision,
+                        }
+                    )
+                    log(
+                        "REMEDIATE",
+                        (
+                            f"mode={decision['mode']} skipped action={decision['action']} "
+                            f"reason={decision['reason']}"
+                        ),
+                    )
 
             incident_report = {
                 "incident_id": incident_id,
@@ -685,6 +1297,8 @@ async def receive_alert(request: Request):
                 "completed_at": _utc_now_iso(),
                 "analysis": result,
                 "decision": decision,
+                "agent_trace": state.get("agent_trace", []),
+                "agent_error": state.get("agent_error"),
                 "alert": {
                     "labels": labels,
                     "startsAt": alert.get("startsAt"),
@@ -724,7 +1338,8 @@ async def analyze(request: Request):
 
     try:
         state = workflow.invoke({
-            "alert": alert
+            "alert": alert,
+            "analysis_only": True,
         })
 
         result = state.get("result", {})
@@ -748,6 +1363,8 @@ async def remediate(request: Request):
     namespace = data.get("namespace", "default")
     deployment = data.get("deployment")
     replicas = data.get("replicas")
+    target_revision = data.get("target_revision")
+    alert_name = data.get("alert_name")
     dry_run = bool(data.get("dry_run", False))
     incident_started_at = _utc_now_iso()
 
@@ -760,6 +1377,8 @@ async def remediate(request: Request):
         deployment=deployment,
         replicas=replicas,
         dry_run=dry_run,
+        target_revision=target_revision,
+        alert_name=alert_name,
     )
 
     incident_report = {
