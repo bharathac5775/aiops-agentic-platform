@@ -9,6 +9,7 @@ pipeline {
 
 	environment {
 		IMAGE_NAME = 'bacdocker/ai-engine'
+        DOCKER_USER = 'bacdocker'
 		IMAGE_TAG = "${BUILD_NUMBER}"
 		IMAGE_FULL = "${IMAGE_NAME}:${IMAGE_TAG}"
 		DASHBOARD_IMAGE_NAME = 'bacdocker/aiops-dashboard'
@@ -78,7 +79,6 @@ pipeline {
 				withCredentials([string(credentialsId: 'dockerhub-pass', variable: 'DOCKER_PASS')]) {
 					sh '''
 						set -euxo pipefail
-						DOCKER_USER="${DOCKERHUB_USERNAME:-bacdocker}"
 						echo "$DOCKER_PASS" | docker login -u "$DOCKER_USER" --password-stdin
 						docker push "$IMAGE_FULL"
 						docker tag "$IMAGE_FULL" "${IMAGE_NAME}:latest"
