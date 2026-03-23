@@ -100,7 +100,7 @@ pipeline {
 					kubectl apply -f k8s/ai-engine-incidents-pvc.yaml
 					kubectl apply -f k8s/ai-engine-service.yaml
 					kubectl apply -f k8s/ai-engine-deployment.yaml
-                    kubectl apply -f k8s/stress-app-deployment.yaml
+                    kubectl apply -f k8s/stress-app-hpa.yaml
 					kubectl apply -f k8s/dashboard-service.yaml
 					kubectl apply -f k8s/dashboard-deployment.yaml
 					kubectl apply -f k8s/dashboard-ingress.yaml
