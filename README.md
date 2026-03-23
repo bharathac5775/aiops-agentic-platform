@@ -112,8 +112,6 @@ flowchart TD
 - Kubernetes (Minikube)
 - Helm
 - Jenkins
-- Terraform
-- Ansible
 
 ### Observability
 
@@ -125,47 +123,91 @@ flowchart TD
 
 ### AI / Agentic AI
 
-- Python
-- FastAPI
 - LangGraph
 - LangChain
 - Ollama
+- RAG (Retrieval-Augmented Generation)
 - ChromaDB
+
+### Application Layer
+
+- Python
+- FastAPI
 - Streamlit
+
+### Platform Integration
+
+- Kubernetes Python Client
 
 ## 📂 Project Structure
 
 ```text
 aiops-agentic-platform/
-
-app/
-  stress test application
-
-ai-engine/
-  agents/
-  workflows/
-  tools/
-  api/
-
-k8s/
-  kubernetes manifests
-
-jenkins/
-  Jenkins pipeline
-
-terraform/
-  infrastructure setup
-
-ansible/
-  automation playbooks
-
-dashboard/
-  streamlit dashboard
-
-docs/
-  architecture documentation
-
-README.md
+├── .gitignore
+├── README.md
+├── ai-engine/
+│   ├── Dockerfile
+│   ├── agents/
+│   │   ├── __init__.py
+│   │   ├── monitor_agent.py
+│   │   ├── rca_agent.py
+│   │   ├── remediation_agent.py
+│   │   ├── report_agent.py
+│   │   └── state.py
+│   ├── api/
+│   │   └── main.py
+│   ├── requirements.txt
+│   ├── tools/
+│   │   ├── llm_client.py
+│   │   ├── loki_client.py
+│   │   ├── notification.py
+│   │   ├── prometheus_client.py
+│   │   └── rag/
+│   │       ├── __init__.py
+│   │       ├── base.py
+│   │       ├── chroma_store.py
+│   │       └── service.py
+│   └── workflows/
+│       ├── agent_workflow.py
+│       └── cpu_workflow.py
+├── app/
+│   ├── Dockerfile
+│   ├── requirements.txt
+│   └── src/
+│       └── app.py
+├── dashboard/
+│   ├── Dockerfile
+│   ├── app.py
+│   └── requirements.txt
+├── docs/
+│   └── architecture.md
+├── grafana/
+│   └── dashboards/
+│       └── stress-app-dashboard.json
+├── jenkins/
+│   └── Jenkinsfile
+├── k8s/
+│   ├── ai-engine-deployment.yaml
+│   ├── ai-engine-incidents-pvc.yaml
+│   ├── ai-engine-rbac.yaml
+│   ├── ai-engine-service.yaml
+│   ├── alertmanager/
+│   │   └── alertmanager.yaml
+│   ├── alerts/
+│   │   ├── cpu-alert.yaml
+│   │   └── loki-alerts.yaml
+│   ├── discord-webhook-secret.yaml
+│   ├── dashboard-deployment.yaml
+│   ├── dashboard-ingress.yaml
+│   ├── dashboard-service.yaml
+│   ├── grafana-dashboard.yaml
+│   ├── loki/
+│   │   ├── loki-values.yaml
+│   │   └── promtail-values.yaml
+│   ├── stress-app-deployment.yaml
+│   ├── stress-app-hpa.yaml
+│   └── stress-app-service.yaml
+└── (scripts/ and venv/ excluded)
 ```
 
 ## 📊 Operations Dashboard
@@ -288,6 +330,30 @@ Expected credential:
 Optional environment variable:
 
 - `DOCKERHUB_USERNAME` (defaults to `bacdocker` if not set)
+
+### Secrets Management (Recommended)
+
+Do not commit real webhook URLs to Git (including base64 values). Keep placeholder YAML in repository and inject real secrets at runtime.
+
+Local/dev setup command (idempotent):
+
+```bash
+kubectl -n default create secret generic ai-engine-discord-webhook \
+  --from-literal=webhook-url='YOUR_REAL_WEBHOOK_URL' \
+  --dry-run=client -o yaml | kubectl apply -f -
+kubectl rollout restart deployment/ai-engine -n default
+```
+
+Verify currently configured value:
+
+```bash
+kubectl get secret ai-engine-discord-webhook -n default -o jsonpath='{.data.webhook-url}' | base64 -d; echo
+```
+
+Keep webhook secret provisioning outside Jenkins for a cleaner pipeline:
+
+- Create/update `ai-engine-discord-webhook` with `kubectl` before deploy
+- Keep `k8s/discord-webhook-secret.yaml` as placeholder-only template in git
 
 ## 🧪 Stress Test Application
 
@@ -1697,6 +1763,46 @@ kubectl rollout restart statefulset alertmanager-monitoring-kube-prometheus-aler
 Required webhook endpoint:
 
 - `http://ai-engine.default.svc.cluster.local:8000/alerts`
+
+### Discord Notifications
+
+When an alert is processed by `POST /alerts`, AI engine now posts a summary message to Discord.
+
+Files involved:
+
+- `ai-engine/tools/notification.py`
+- `ai-engine/api/main.py`
+- `k8s/ai-engine-deployment.yaml`
+- `k8s/discord-webhook-secret.yaml`
+
+Configure webhook securely through Kubernetes Secret (recommended):
+
+```bash
+kubectl create secret generic ai-engine-discord-webhook \
+  --from-literal=webhook-url='<YOUR_DISCORD_WEBHOOK_URL>' \
+  -n default \
+  --dry-run=client -o yaml | kubectl apply -f -
+```
+
+Or edit the template file and apply:
+
+```bash
+kubectl apply -f k8s/discord-webhook-secret.yaml
+```
+
+Deploy/restart AI engine:
+
+```bash
+kubectl apply -f k8s/ai-engine-deployment.yaml
+kubectl rollout restart deployment/ai-engine -n default
+kubectl rollout status deployment/ai-engine -n default --timeout=300s
+```
+
+Notification behavior:
+
+- Controlled by `DISCORD_NOTIFICATIONS_ENABLED` (default `true`)
+- Uses `DISCORD_WEBHOOK_URL` from secret `ai-engine-discord-webhook`
+- Sends incident summary (alert, pod, namespace, root cause, recommendation, confidence, remediation outcome)
 
 Routing pattern for AIOps alerts:
 

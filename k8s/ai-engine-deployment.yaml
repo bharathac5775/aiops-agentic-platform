@@ -15,7 +15,7 @@ spec:
       serviceAccountName: ai-engine-sa
       containers:
       - name: ai-engine
-        image: bacdocker/ai-engine:v31
+        image: bacdocker/ai-engine:v32
         ports:
         - containerPort: 8000
         env:
@@ -61,6 +61,13 @@ spec:
           value: chroma
         - name: INCIDENT_MEMORY_PATH
           value: /data/incidents/chroma
+        - name: DISCORD_NOTIFICATIONS_ENABLED
+          value: "true"
+        - name: DISCORD_WEBHOOK_URL
+          valueFrom:
+            secretKeyRef:
+              name: ai-engine-discord-webhook
+              key: webhook-url
         volumeMounts:
         - name: incident-history
           mountPath: /data

@@ -11,6 +11,7 @@ from kubernetes import client, config
 from kubernetes.client.exceptions import ApiException
 from workflows.agent_workflow import build_agent_graph
 from tools.rag import incident_memory_store
+from tools.notification import notify_discord_from_report
 
 workflow = build_agent_graph()
 
@@ -1309,6 +1310,7 @@ async def receive_alert(request: Request):
             }
             saved_report = _persist_incident(incident_report)
             _store_incident_memory(saved_report)
+            notify_discord_from_report(saved_report)
 
             processed += 1
 
@@ -1425,6 +1427,7 @@ async def remediate(request: Request):
     }
     saved_report = _persist_incident(incident_report)
     _store_incident_memory(saved_report)
+    notify_discord_from_report(saved_report)
     response["incident_id"] = saved_report["incident_id"]
     response["correlation_id"] = saved_report["correlation_id"]
 
