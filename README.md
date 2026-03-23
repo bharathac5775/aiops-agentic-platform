@@ -68,40 +68,40 @@ This project builds an automated incident response system that:
               Remediation API Action
 ```
 
-        ## 🧭 Agent Workflow
+## 🧭 Agent Workflow
 
-        The AI engine executes a multi-agent orchestration path with guarded handoffs and fallback behavior.
+The AI engine executes a multi-agent orchestration path with guarded handoffs and fallback behavior.
 
-        ```mermaid
-        flowchart TD
-          A[Alertmanager Webhook] --> B[FastAPI /alerts]
-          B --> C[Monitor Agent]
-          C --> D{Agent Error?}
-          D -- No --> E[RCA Agent]
-          D -- Yes --> H[Fallback Agent]
-          E --> F{Agent Error?}
-          F -- No --> G[Remediation Agent]
-          F -- Yes --> H
-          G --> I{Agent Error?}
-          I -- No --> J[Report Agent]
-          I -- Yes --> H
-          H --> J
-          J --> K[Persist Incident + Markdown Report]
-          K --> L[Store Incident Memory in Chroma]
-        ```
+```mermaid
+flowchart TD
+  A[Alertmanager Webhook] --> B[FastAPI /alerts]
+  B --> C[Monitor Agent]
+  C --> D{Agent Error?}
+  D -- No --> E[RCA Agent]
+  D -- Yes --> H[Fallback Agent]
+  E --> F{Agent Error?}
+  F -- No --> G[Remediation Agent]
+  F -- Yes --> H
+  G --> I{Agent Error?}
+  I -- No --> J[Report Agent]
+  I -- Yes --> H
+  H --> J
+  J --> K[Persist Incident + Markdown Report]
+  K --> L[Store Incident Memory in Chroma]
+```
 
-        ### Additional Improvements Implemented
+### Additional Improvements Implemented
 
-        - Added multi-agent traceability with per-agent status and detail events in incident records.
-        - Added persistent incident artifacts: JSONL history plus Markdown report generation.
-        - Added RAG similarity retrieval and write-back using Chroma persistent storage.
-        - Added RAG diagnostics endpoint: `GET /diagnostics/rag`.
-        - Added guarded auto-remediation modes with confidence thresholds, cooldown, and retry windows.
-        - Added persistent image-pull rollback safety checks with retry-threshold gating.
-        - Added HPA-aware scaling that can raise `maxReplicas` within configured caps.
-        - Added memory remediation that patches deployment memory limits and restarts workload safely.
-        - Added generalized target-container selection with selection reasoning in remediation responses.
-        - Added broader Kubernetes alert coverage and routing for crashloop/image-pull/config/readiness classes.
+- Added multi-agent traceability with per-agent status and detail events in incident records.
+- Added persistent incident artifacts: JSONL history plus Markdown report generation.
+- Added RAG similarity retrieval and write-back using Chroma persistent storage.
+- Added RAG diagnostics endpoint: `GET /diagnostics/rag`.
+- Added guarded auto-remediation modes with confidence thresholds, cooldown, and retry windows.
+- Added persistent image-pull rollback safety checks with retry-threshold gating.
+- Added HPA-aware scaling that can raise `maxReplicas` within configured caps.
+- Added memory remediation that patches deployment memory limits and restarts workload safely.
+- Added generalized target-container selection with selection reasoning in remediation responses.
+- Added broader Kubernetes alert coverage and routing for crashloop/image-pull/config/readiness classes.
 
 ## 🛠 Tech Stack
 
@@ -167,6 +167,127 @@ docs/
 
 README.md
 ```
+
+## 📊 Operations Dashboard
+
+The Streamlit dashboard provides live operational visibility from AI engine APIs.
+
+Source files:
+
+- `dashboard/app.py`
+- `dashboard/requirements.txt`
+- `dashboard/Dockerfile`
+
+Dashboard views include:
+
+- Recent incidents with RCA recommendation and decision source
+- Active incident count in a configurable time window
+- Remediation history and outcome distribution (executed/skipped/failed)
+- RAG diagnostics (`collection_count`, latest retrieval metadata)
+
+### Run Dashboard
+
+```bash
+cd dashboard
+pip install -r requirements.txt
+streamlit run app.py
+```
+
+By default the dashboard points to `http://localhost:18000`.
+You can change API base URL from the sidebar.
+
+### Kubernetes Deployment (No Local Streamlit Run)
+
+Dashboard Kubernetes manifests:
+
+- `k8s/dashboard-deployment.yaml`
+- `k8s/dashboard-service.yaml`
+- `k8s/dashboard-ingress.yaml` (optional)
+
+Build and push dashboard image:
+
+```bash
+docker build -t bacdocker/aiops-dashboard:latest ./dashboard
+docker push bacdocker/aiops-dashboard:latest
+```
+
+Deploy manifests:
+
+```bash
+kubectl apply -f k8s/dashboard-service.yaml
+kubectl apply -f k8s/dashboard-deployment.yaml
+kubectl apply -f k8s/dashboard-ingress.yaml
+kubectl rollout status deployment/aiops-dashboard -n default --timeout=300s
+```
+
+Access dashboard without local Streamlit process:
+
+Option A: Service URL (quick local access)
+
+```bash
+minikube -p aiops service aiops-dashboard -n default --url
+```
+
+Option B: Ingress hostname (stable URL)
+
+```bash
+minikube -p aiops addons enable ingress
+minikube -p aiops tunnel
+```
+
+Add host mapping in `/etc/hosts`:
+
+```text
+127.0.0.1 aiops-dashboard.local
+```
+
+Then open:
+
+```text
+http://aiops-dashboard.local
+```
+
+When using Docker driver on macOS, keep the `minikube tunnel` terminal running.
+
+In-cluster dashboard uses:
+
+- `AIOPS_API_BASE_URL=http://ai-engine.default.svc.cluster.local:8000`
+
+## 🔁 Jenkins CI/CD Integration
+
+The CI/CD pipeline is implemented in:
+
+- `jenkins/Jenkinsfile`
+
+Pipeline stages:
+
+- Checkout
+- Quality gates (Python compile checks + Kubernetes manifest dry-run)
+- Docker build (`ai-engine` + `aiops-dashboard`)
+- Test execution (auto-detect test presence)
+- Docker push (build tag + latest for both images)
+- Kubernetes deploy + rollout status validation (both deployments)
+- Smoke checks + API contract checks (engine + dashboard)
+
+### Quality Gates Included
+
+- Python compilation for `ai-engine`, `app`, and `dashboard`
+- Kubernetes manifest validation with `kubectl apply --dry-run=client`
+- Post-deploy smoke and contract validation for:
+  - `/`
+  - `/incidents`
+  - `/incidents/remediations`
+  - Dashboard web UI response (`aiops-dashboard` service)
+
+### Jenkins Credentials
+
+Expected credential:
+
+- `dockerhub-pass` (secret text)
+
+Optional environment variable:
+
+- `DOCKERHUB_USERNAME` (defaults to `bacdocker` if not set)
 
 ## 🧪 Stress Test Application
 

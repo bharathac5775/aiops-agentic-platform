@@ -1,0 +1,161 @@
+pipeline {
+	agent any
+
+	options {
+		timestamps()
+		disableConcurrentBuilds()
+		timeout(time: 45, unit: 'MINUTES')
+	}
+
+	environment {
+		IMAGE_NAME = 'bacdocker/ai-engine'
+		IMAGE_TAG = "${BUILD_NUMBER}"
+		IMAGE_FULL = "${IMAGE_NAME}:${IMAGE_TAG}"
+		DASHBOARD_IMAGE_NAME = 'bacdocker/aiops-dashboard'
+		DASHBOARD_IMAGE_FULL = "${DASHBOARD_IMAGE_NAME}:${IMAGE_TAG}"
+		NAMESPACE = 'default'
+		DEPLOYMENT = 'ai-engine'
+		CONTAINER = 'ai-engine'
+		APP_DIR = 'ai-engine'
+		DASHBOARD_DEPLOYMENT = 'aiops-dashboard'
+		DASHBOARD_CONTAINER = 'aiops-dashboard'
+		DASHBOARD_DIR = 'dashboard'
+	}
+
+	stages {
+		stage('Checkout') {
+			steps {
+				checkout scm
+			}
+		}
+
+		stage('Quality Gates: Static Validation') {
+			steps {
+				sh '''
+					set -euxo pipefail
+					python3 --version
+					kubectl version --client
+
+					python3 -m compileall ai-engine app dashboard
+
+					kubectl apply --dry-run=client -f k8s/ai-engine-service.yaml
+					kubectl apply --dry-run=client -f k8s/ai-engine-rbac.yaml
+					kubectl apply --dry-run=client -f k8s/ai-engine-incidents-pvc.yaml
+					kubectl apply --dry-run=client -f k8s/ai-engine-deployment.yaml
+					kubectl apply --dry-run=client -f k8s/dashboard-deployment.yaml
+					kubectl apply --dry-run=client -f k8s/dashboard-service.yaml
+					kubectl apply --dry-run=client -f k8s/dashboard-ingress.yaml
+					kubectl apply --dry-run=client -f k8s/alerts/cpu-alert.yaml
+				'''
+			}
+		}
+
+		stage('Build Docker Image') {
+			steps {
+				sh '''
+					set -euxo pipefail
+					docker build -t "$IMAGE_FULL" "$APP_DIR"
+					docker build -t "$DASHBOARD_IMAGE_FULL" "$DASHBOARD_DIR"
+				'''
+			}
+		}
+
+		stage('Run Tests') {
+			steps {
+				sh '''
+					set -euxo pipefail
+					if [ -d tests ] || find ai-engine -maxdepth 2 -name 'test*.py' -print -quit | grep -q .; then
+						python3 -m unittest discover -v
+					else
+						echo "No Python unit tests found; quality gates handled by compile and smoke checks"
+					fi
+				'''
+			}
+		}
+
+		stage('Push Docker Image') {
+			steps {
+				withCredentials([string(credentialsId: 'dockerhub-pass', variable: 'DOCKER_PASS')]) {
+					sh '''
+						set -euxo pipefail
+						DOCKER_USER="${DOCKERHUB_USERNAME:-bacdocker}"
+						echo "$DOCKER_PASS" | docker login -u "$DOCKER_USER" --password-stdin
+						docker push "$IMAGE_FULL"
+						docker tag "$IMAGE_FULL" "${IMAGE_NAME}:latest"
+						docker push "${IMAGE_NAME}:latest"
+						docker push "$DASHBOARD_IMAGE_FULL"
+						docker tag "$DASHBOARD_IMAGE_FULL" "${DASHBOARD_IMAGE_NAME}:latest"
+						docker push "${DASHBOARD_IMAGE_NAME}:latest"
+					'''
+				}
+			}
+		}
+
+		stage('Deploy to Kubernetes') {
+			steps {
+				sh '''
+					set -euxo pipefail
+
+					kubectl apply -f k8s/ai-engine-rbac.yaml
+					kubectl apply -f k8s/ai-engine-incidents-pvc.yaml
+					kubectl apply -f k8s/ai-engine-service.yaml
+					kubectl apply -f k8s/ai-engine-deployment.yaml
+					kubectl apply -f k8s/dashboard-service.yaml
+					kubectl apply -f k8s/dashboard-deployment.yaml
+					kubectl apply -f k8s/dashboard-ingress.yaml
+
+					kubectl -n "$NAMESPACE" set image deployment/"$DEPLOYMENT" "$CONTAINER"="$IMAGE_FULL"
+					kubectl -n "$NAMESPACE" rollout status deployment/"$DEPLOYMENT" --timeout=300s
+					kubectl -n "$NAMESPACE" set image deployment/"$DASHBOARD_DEPLOYMENT" "$DASHBOARD_CONTAINER"="$DASHBOARD_IMAGE_FULL"
+					kubectl -n "$NAMESPACE" rollout status deployment/"$DASHBOARD_DEPLOYMENT" --timeout=300s
+				'''
+			}
+		}
+
+		stage('Smoke Check + Contract Gate') {
+			steps {
+				sh '''
+					set -euxo pipefail
+
+					kubectl -n "$NAMESPACE" run ci-smoke-${BUILD_NUMBER} \
+						--image=curlimages/curl:8.7.1 \
+						--restart=Never --rm -i -- \
+						sh -c 'curl -fsS http://ai-engine.default.svc.cluster.local:8000/ | tee /tmp/health.json && grep -q "AI Engine running" /tmp/health.json'
+
+					kubectl -n "$NAMESPACE" run ci-contract-${BUILD_NUMBER} \
+						--image=curlimages/curl:8.7.1 \
+						--restart=Never --rm -i -- \
+						sh -c '\
+							set -eu; \
+							curl -fsS http://ai-engine.default.svc.cluster.local:8000/incidents?limit=1 > /tmp/incidents.json; \
+							curl -fsS http://ai-engine.default.svc.cluster.local:8000/incidents/remediations?limit=1 > /tmp/remediations.json; \
+							grep -q "incidents" /tmp/incidents.json; \
+							grep -q "count" /tmp/incidents.json; \
+							grep -q "remediation_history" /tmp/remediations.json; \
+							grep -q "count" /tmp/remediations.json \
+						'
+
+					kubectl -n "$NAMESPACE" run ci-dashboard-smoke-${BUILD_NUMBER} \
+						--image=curlimages/curl:8.7.1 \
+						--restart=Never --rm -i -- \
+						sh -c 'curl -fsS http://aiops-dashboard.default.svc.cluster.local:8501/ | tee /tmp/dashboard.html && grep -qi "streamlit" /tmp/dashboard.html'
+				'''
+			}
+		}
+	}
+
+	post {
+		always {
+			sh '''
+				set +e
+				docker logout || true
+			'''
+		}
+		success {
+			echo "Pipeline completed: build, quality gates, push, deploy, and smoke checks passed"
+		}
+		failure {
+			echo "Pipeline failed. Check stage logs for the failed quality gate or deployment step."
+		}
+	}
+}
