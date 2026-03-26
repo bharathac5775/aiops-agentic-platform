@@ -6,7 +6,7 @@ pipeline {
 		disableConcurrentBuilds()
 		timeout(time: 45, unit: 'MINUTES')
 	}
-
+//trigerrs on any push to GitHub repo (including branches and PRs) - adjust as needed for specific branch or tag patterns
 	triggers {
 		githubPush()
 	}
