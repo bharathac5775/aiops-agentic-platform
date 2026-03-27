@@ -1,0 +1,35 @@
+sequenceDiagram
+    autonumber
+    participant SA as Stress App
+    participant PR as Prometheus
+    participant AM as Alertmanager
+    participant API as AI Engine API
+    participant MON as Monitor Agent
+    participant RCA as RCA Agent
+    participant REM as Remediation Agent
+    participant K8S as Kubernetes API
+    participant REP as Report Agent
+    participant DB as Incident Store
+    participant DIS as Discord
+
+    SA->>PR: High CPU behavior
+    PR->>AM: Firing alert
+    AM->>API: POST /alerts
+
+    API->>MON: Collect context
+    MON->>PR: Query metrics
+    MON->>RCA: Enriched signals
+
+    RCA->>RCA: LLM + RAG reasoning
+    RCA->>REM: Proposed action + confidence
+
+    alt Guardrails pass
+        REM->>K8S: Execute safe action\n(restart or scale)
+        K8S-->>REM: Action result
+    else Guardrails block
+        REM-->>REP: Mark as blocked or fallback
+    end
+
+    REM->>REP: Final remediation summary
+    REP->>DB: Persist incident + report
+    REP->>DIS: Send notification

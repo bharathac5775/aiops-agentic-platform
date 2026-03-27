@@ -1,0 +1,67 @@
+flowchart LR
+
+%% LinkedIn-ready architecture flow for AIOps Agentic Self-Healing Platform
+
+subgraph A[Observability Signals]
+  P[Prometheus\nMetrics]
+  L[Loki\nLogs]
+  AR[Alert Rules\nCPU, Memory, CrashLoop, OOM]
+  AM[Alertmanager]
+  P --> AR --> AM
+  L --> AR
+end
+
+subgraph B[AI Engine\nFastAPI + LangGraph]
+  API[/POST /alerts/]
+  ORCH[Agent Orchestrator]
+
+  subgraph C[Multi-Agent Runtime]
+    M[1. Monitor Agent]
+    R[2. RCA Agent\nLLM + RAG]
+    D[3. Remediation Agent\nPolicy + Guardrails]
+    REP[4. Report Agent]
+    FB[Fallback Agent]
+    M --> R --> D --> REP
+    D -. guarded block .-> FB --> REP
+  end
+
+  MEM[Chroma Memory\nIncident Similarity]
+  OLL[Ollama LLM]
+  K8S[Kubernetes Executor\nrestart, scale, rollback]
+end
+
+subgraph E[Runtime Outcomes]
+  INC[Incident History\nJSONL + Markdown]
+  DIS[Discord Notifications]
+  DAS[Streamlit Dashboard]
+end
+
+subgraph F[Delivery Automation]
+  GH[GitHub]
+  JN[Jenkins CI/CD]
+  IMG[Docker Images]
+  DEP[K8s Deploy + Rollout]
+  GH --> JN --> IMG --> DEP
+end
+
+AM --> API --> ORCH
+ORCH --> M
+R --> OLL
+R --> MEM
+D --> K8S
+REP --> INC
+REP --> DIS
+DAS --> INC
+DEP --> B
+
+classDef src fill:#EAF8FF,stroke:#0F6CBD,stroke-width:1.5px,color:#0B253E;
+classDef engine fill:#FFF4E5,stroke:#C77400,stroke-width:1.5px,color:#3A2400;
+classDef runtime fill:#F4FDEB,stroke:#4C8A00,stroke-width:1.5px,color:#173300;
+classDef out fill:#F8F1FF,stroke:#7A3EB1,stroke-width:1.5px,color:#2B1045;
+classDef cicd fill:#F3F4F6,stroke:#4B5563,stroke-width:1.5px,color:#111827;
+
+class P,L,AR,AM src;
+class API,ORCH,MEM,OLL,K8S engine;
+class M,R,D,REP,FB runtime;
+class INC,DIS,DAS out;
+class GH,JN,IMG,DEP cicd;

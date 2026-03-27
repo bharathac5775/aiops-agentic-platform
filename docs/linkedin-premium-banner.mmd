@@ -1,0 +1,77 @@
+%%{init: {'theme': 'base', 'themeVariables': { 'primaryColor': '#EAF4FF', 'primaryTextColor': '#0B253E', 'primaryBorderColor': '#0F6CBD', 'lineColor': '#355070', 'secondaryColor': '#FFF4E5', 'tertiaryColor': '#F4FDEB', 'fontFamily': 'Trebuchet MS, Verdana, sans-serif' }}}%%
+flowchart TB
+
+T[AIOps Agentic Self-Healing Kubernetes Platform\nEnd-to-End Intelligent Incident Lifecycle]
+
+subgraph TOP[Architecture Flow]
+  direction LR
+
+  subgraph OBS[Observability]
+    PR[Prometheus\nMetrics]
+    LK[Loki\nLogs]
+    AR[Alert Rules]
+    AM[Alertmanager]
+    PR --> AR --> AM
+    LK --> AR
+  end
+
+  subgraph ENG[AI Engine: FastAPI + LangGraph]
+    API[/POST /alerts/]
+    ORCH[Agent Orchestrator]
+    AG[Monitor -> RCA -> Remediation -> Report]
+    MEM[Chroma RAG Memory]
+    LLM[Ollama LLM]
+    GUA[Policy Guardrails\nconfidence, cooldown, retries]
+
+    API --> ORCH --> AG
+    AG --> LLM
+    AG --> MEM
+    AG --> GUA
+  end
+
+  subgraph EXE[Execution and Outcomes]
+    K8S[Kubernetes Actions\nrestart, scale, rollback]
+    INC[Incident History\nJSONL + Markdown]
+    DIS[Discord Notifications]
+    DASH[Dashboard Visibility\nStreamlit + Grafana]
+
+    K8S --> INC
+    INC --> DIS
+    INC --> DASH
+  end
+
+  AM --> API
+  GUA --> K8S
+end
+
+subgraph BOT[Live Runtime Action Flow]
+  direction LR
+  S1[1 Detect\nAlert Fired] --> S2[2 Analyze\nLLM + RAG RCA]
+  S2 --> S3[3 Decide\nGuardrails Check]
+  S3 --> S4[4 Remediate\nSafe K8s Action]
+  S4 --> S5[5 Persist + Notify\nHistory + Discord]
+end
+
+subgraph CICD[Continuous Delivery]
+  direction LR
+  GH[GitHub] --> JN[Jenkins Pipeline] --> IMG[Docker Images] --> DEP[Kubernetes Rollout]
+  DEP --> API
+end
+
+T --> TOP
+TOP --> BOT
+BOT --> CICD
+
+classDef title fill:#0F6CBD,stroke:#0F6CBD,color:#FFFFFF,font-weight:bold;
+classDef obs fill:#EAF8FF,stroke:#0F6CBD,color:#0B253E;
+classDef eng fill:#FFF4E5,stroke:#C77400,color:#3A2400;
+classDef exe fill:#F4FDEB,stroke:#4C8A00,color:#173300;
+classDef runtime fill:#F8F1FF,stroke:#7A3EB1,color:#2B1045;
+classDef delivery fill:#F3F4F6,stroke:#4B5563,color:#111827;
+
+class T title;
+class PR,LK,AR,AM obs;
+class API,ORCH,AG,MEM,LLM,GUA eng;
+class K8S,INC,DIS,DASH exe;
+class S1,S2,S3,S4,S5 runtime;
+class GH,JN,IMG,DEP delivery;
