@@ -412,7 +412,13 @@ def _evaluate_auto_policy(alert_name: str, pod: str, namespace: str, recommendat
             "action": normalized_action,
         }
 
-    if normalized_action == "rollback deployment" and alert_name in PERSISTENT_IMAGE_PULL_ROLLBACK_ALERTS:
+    # For persistent image-pull alerts, Prometheus already enforces sustained duration.
+    # Keep restart-threshold checks only for non-persistent image-pull alerts.
+    if (
+        normalized_action == "rollback deployment"
+        and alert_name in IMAGE_PULL_ROLLBACK_ALERTS
+        and alert_name not in PERSISTENT_IMAGE_PULL_ROLLBACK_ALERTS
+    ):
         if not pod:
             return {
                 "run": False,
@@ -1006,7 +1012,10 @@ def _execute_remediation(action: str, pod: str | None, namespace: str, deploymen
             }
 
         if normalized_action == "rollback deployment":
-            if alert_name in IMAGE_PULL_ROLLBACK_ALERTS:
+            if (
+                alert_name in IMAGE_PULL_ROLLBACK_ALERTS
+                and alert_name not in PERSISTENT_IMAGE_PULL_ROLLBACK_ALERTS
+            ):
                 if not pod:
                     return {
                         "status": "blocked",

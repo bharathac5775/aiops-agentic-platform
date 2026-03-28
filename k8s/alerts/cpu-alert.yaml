@@ -67,19 +67,13 @@ spec:
 
     - alert: PodImagePullBackOffPersistent
       expr: |
-        (
-          max_over_time(kube_pod_container_status_waiting_reason{namespace="default",reason="ImagePullBackOff"}[10m]) >= 1
-        )
-        and
-        (
-          increase(kube_pod_container_status_restarts_total{namespace="default"}[10m]) >= 3
-        )
-      for: 5m
+        min_over_time(kube_pod_container_status_waiting_reason{namespace="default",reason="ImagePullBackOff"}[15m]) >= 1
+      for: 2m
       labels:
         severity: critical
       annotations:
         summary: "Pod ImagePullBackOff Persistent"
-        description: "Image pull failure has persisted beyond retry threshold"
+        description: "Image pull backoff has remained continuously active for an extended duration"
 
     - alert: PodErrImagePull
       expr: max_over_time(kube_pod_container_status_waiting_reason{namespace="default",reason="ErrImagePull"}[5m]) >= 1
