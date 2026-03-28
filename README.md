@@ -304,6 +304,10 @@ Webhook secret provisioning is intentionally managed outside Jenkins.
 
 ## 🖼️ Screenshots
 
+### Featured Platform Workflow
+
+![AIOps End-to-End Workflow Overview](docs/screenshots/aiops-end-to-end-workflow-overview.png)
+
 ### Dashboards
 
 ![AI Engine Streamlit Dashboard](docs/screenshots/ai-engin-stremlit-dashboard.png)
