@@ -272,7 +272,7 @@ ALERT_POLICY = {
     },
     "PodOOMKilled": {
         "min_confidence": _env_float("AUTO_MIN_CONFIDENCE_PODOOMKILLED", 0.95),
-        "allowed_actions": set(),
+        "allowed_actions": {"increase memory limit and restart pod", "restart pod"},
     },
     "PodImagePullBackOff": {
         "min_confidence": _env_float("AUTO_MIN_CONFIDENCE_PODIMAGEPULLBACKOFF", 0.9),
@@ -322,7 +322,7 @@ def _should_auto_execute(action: str, alert_name: str | None = None):
     if normalized_action in SAFE_AUTO_ACTIONS:
         return True, mode, True
 
-    if normalized_action == "increase memory limit and restart pod" and alert_name == "HighMemoryUsage":
+    if normalized_action == "increase memory limit and restart pod" and alert_name in {"HighMemoryUsage", "PodOOMKilled"}:
         return True, mode, True
 
     if normalized_action == "rollback deployment" and alert_name in PERSISTENT_IMAGE_PULL_ROLLBACK_ALERTS:
