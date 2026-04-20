@@ -15,7 +15,7 @@ spec:
       serviceAccountName: ai-engine-sa
       containers:
       - name: ai-engine
-        image: bacdocker/ai-engine:v32
+        image: bacdocker/ai-engine:v33
         ports:
         - containerPort: 8000
         env:
